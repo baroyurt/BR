@@ -412,12 +412,24 @@ foreach ($employees as $emp) {
 if ($current_total_minutes >= 1400) { // 23:20 = 1400 minutes (23*60 + 20)
     $tomorrow_date = (clone $view_date)->modify('+1 day');
     
+    // Debug logging
+    if (isset($_GET['debug']) && $_GET['debug'] == '1') {
+        error_log("PRE-SHOW: Current time >= 23:20, checking tomorrow's shifts");
+        error_log("PRE-SHOW: Tomorrow date = " . $tomorrow_date->format('Y-m-d'));
+    }
+    
+    $preshow_count = 0;
     foreach ($employees as $emp) {
         // Skip if already added
         if (isset($added_employee_ids[$emp['id']])) continue;
         
         // Get tomorrow's shift
         $vardiya_kod_tomorrow = get_vardiya_kod_for_day($emp['external_id'], $tomorrow_date->format('Y-m-d'));
+        
+        // Debug logging
+        if (isset($_GET['debug']) && $_GET['debug'] == '1' && $vardiya_kod_tomorrow && preg_match('/^24/', $vardiya_kod_tomorrow)) {
+            error_log("PRE-SHOW: " . $emp['name'] . " has tomorrow shift: " . $vardiya_kod_tomorrow);
+        }
         
         // Only show shift "24" or "24+" from tomorrow
         if (preg_match('/^24\+?$/', $vardiya_kod_tomorrow)) {
@@ -444,8 +456,24 @@ if ($current_total_minutes >= 1400) { // 23:20 = 1400 minutes (23*60 + 20)
                 // Add to "not started yet" since shift hasn't begun
                 $not_started_yet[] = $data;
                 $added_employee_ids[$emp['id']] = true;
+                $preshow_count++;
+                
+                // Debug logging
+                if (isset($_GET['debug']) && $_GET['debug'] == '1') {
+                    error_log("PRE-SHOW: Added " . $emp['name'] . " to not_started_yet");
+                }
             }
         }
+    }
+    
+    // Debug logging
+    if (isset($_GET['debug']) && $_GET['debug'] == '1') {
+        error_log("PRE-SHOW: Total added = " . $preshow_count);
+    }
+} else {
+    // Debug logging
+    if (isset($_GET['debug']) && $_GET['debug'] == '1') {
+        error_log("PRE-SHOW: Skipped (current time " . sprintf("%02d:%02d", $current_hour, $current_minute) . " < 23:20)");
     }
 }
 
