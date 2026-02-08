@@ -246,13 +246,16 @@ function get_visible_start_minute($start_total) {
 }
 
 // NEW: Shift completion helper
-// Mark shifts as completed when their end time has passed on their shift_date
-function mark_completed_shifts($pdo, $now_real) {
+// Mark shifts as completed when their end time has passed
+// This marks work_slots as completed based on real-time, not on day boundaries,
+// ensuring that a slot is completed immediately when its time window ends
+function mark_completed_shifts($pdo) {
     try {
         // Mark shifts as completed if:
-        // 1. They have a shift_date and slot_end
-        // 2. completed_at is NULL
-        // 3. The current real datetime is past the slot_end time
+        // 1. completed_at is NULL (not yet marked as complete)
+        // 2. slot_end is NOT NULL (has a valid end time)
+        // 3. The current server datetime is past the slot_end time
+        // Note: This marks completion in real-time as slots pass, independent of shift_date
         $stmt = $pdo->prepare("
             UPDATE work_slots 
             SET completed_at = NOW() 
@@ -348,7 +351,7 @@ function calculate_shift_hours($vardiya_kod) {
 // -> buraya 'birim' ve 'external_id' sütunu eklendi, böylece UI'da isim altına gösterilebilsin
 
 // NEW: Mark completed shifts before showing employees
-mark_completed_shifts($pdo, $now_real);
+mark_completed_shifts($pdo);
 
 $employees = $pdo->query("SELECT id, name, external_id, birim FROM employees WHERE is_active = 1 AND external_id IS NOT NULL ORDER BY name")->fetchAll(PDO::FETCH_ASSOC);
 $working_now = $not_started_yet = $finished = [];
