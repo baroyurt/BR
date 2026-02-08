@@ -407,6 +407,48 @@ foreach ($employees as $emp) {
     }
 }
 
+// ÖN GÖSTERIM: Gece yarısına yakınken yarının vardiya "24" atamalarını göster
+// Pre-show tomorrow's shift "24" assignments when close to midnight
+if ($current_total_minutes >= 1400) { // 23:20 = 1400 minutes (23*60 + 20)
+    $tomorrow_date = (clone $view_date)->modify('+1 day');
+    
+    foreach ($employees as $emp) {
+        // Skip if already added
+        if (isset($added_employee_ids[$emp['id']])) continue;
+        
+        // Get tomorrow's shift
+        $vardiya_kod_tomorrow = get_vardiya_kod_for_day($emp['external_id'], $tomorrow_date->format('Y-m-d'));
+        
+        // Only show shift "24" or "24+" from tomorrow
+        if (preg_match('/^24\+?$/', $vardiya_kod_tomorrow)) {
+            $shift_info_tomorrow = calculate_shift_hours($vardiya_kod_tomorrow);
+            
+            if ($shift_info_tomorrow) {
+                // Shift starts at 00:00 (0 minutes)
+                $start_total = 0;
+                $end_total = $shift_info_tomorrow['end_hour'] * 60 + $shift_info_tomorrow['end_minute'];
+                
+                // Visible from 23:20 (40 minutes before 00:00)
+                $start_minus = 1400; // 23:20
+                
+                $data = [
+                    'id'=>$emp['id'],
+                    'name'=>$emp['name'],
+                    'birim'=> $emp['birim'] ?? '',
+                    'vardiya_kod'=>$vardiya_kod_tomorrow . ' (yarın)',
+                    'shift_info'=>$shift_info_tomorrow,
+                    'visible_from_minus20'=>$start_minus,
+                    'external_id' => $emp['external_id']
+                ];
+                
+                // Add to "not started yet" since shift hasn't begun
+                $not_started_yet[] = $data;
+                $added_employee_ids[$emp['id']] = true;
+            }
+        }
+    }
+}
+
 // SIRALAMA
 
 // Yeni: birim önceliklendirme fonksiyonu (istediğiniz sıra)
