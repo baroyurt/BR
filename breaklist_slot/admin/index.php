@@ -297,7 +297,7 @@ foreach ($employees as $emp) {
     $vardiya_kod_prev = get_vardiya_kod_for_day($emp['external_id'], $prev_date->format('Y-m-d'));
     $shift_info_prev = calculate_shift_hours($vardiya_kod_prev);
 
-    if ($shift_info_prev && !empty($shift_info_prev['wraps'])) {
+    if ($shift_info_prev && $shift_info_prev['wraps'] === true) {
         $end_total_prev = $shift_info_prev['end_hour'] * 60 + $shift_info_prev['end_minute'];
         if ($end_total_prev > 0 && $current_total_minutes < $end_total_prev) {
             // Employee is still working from previous day's shift

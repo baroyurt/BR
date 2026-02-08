@@ -293,7 +293,7 @@ try {
             
             if ($vardiya_kod_prev && !in_array($vardiya_kod_prev, ['OFF', 'RT'])) {
                 $shift_info_prev = calculate_shift_hours($vardiya_kod_prev);
-                if ($shift_info_prev && !empty($shift_info_prev['wraps'])) {
+                if ($shift_info_prev && $shift_info_prev['wraps'] === true) {
                     // Previous day's shift wraps into today
                     $end_total_prev = $shift_info_prev['end_hour'] * 60 + $shift_info_prev['end_minute'];
                     if ($end_total_prev > 0 && $current_total_minutes < $end_total_prev) {
