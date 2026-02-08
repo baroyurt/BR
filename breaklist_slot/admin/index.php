@@ -291,7 +291,7 @@ $working_now = $not_started_yet = $finished = [];
 $added_employee_ids = [];
 
 foreach ($employees as $emp) {
-    // ÖNCE: Önceki günden taşan mesaiyi kontrol et (GECEYARıSı SONRASı İÇİN ÖNEMLİ)
+    // ÖNCE: Önceki günden taşan mesaiyi kontrol et (GECE YARISI SONRASI İÇİN ÖNEMLİ)
     // Bu kontrol, önceki günden devam eden mesainin gösterilmesini sağlar
     $prev_date = (clone $view_date)->modify('-1 day');
     $vardiya_kod_prev = get_vardiya_kod_for_day($emp['external_id'], $prev_date->format('Y-m-d'));
