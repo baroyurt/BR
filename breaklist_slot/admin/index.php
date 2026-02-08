@@ -291,47 +291,16 @@ $working_now = $not_started_yet = $finished = [];
 $added_employee_ids = [];
 
 foreach ($employees as $emp) {
-    // use wrapper to attempt to fetch vardiya kod for the selected view_date
-    $vardiya_kod_today = get_vardiya_kod_for_day($emp['external_id'], $view_date->format('Y-m-d'));
-    $shift_info_today = calculate_shift_hours($vardiya_kod_today);
-
-    // Primary: if today has a shift and it is not OFF/RT -> show per normal logic
-    if ($shift_info_today) {
-        // compute start/end in minutes since midnight
-        $start_total = $shift_info_today['start_hour'] * 60 + $shift_info_today['start_minute'];
-        $end_total = $shift_info_today['end_hour'] * 60 + $shift_info_today['end_minute'];
-
-        // NEW: görünürlük başlangıcı (00:00'dan önceye taşmaz)
-        $start_minus = get_visible_start_minute($start_total);
-
-        // determine if current time falls into the visible/active window
-        $is_visible_and_working = in_circular_range($current_total_minutes, $start_minus, $end_total);
-
-        $data = [
-            'id'=>$emp['id'],
-            'name'=>$emp['name'],
-            'birim'=> $emp['birim'] ?? '',
-            'vardiya_kod'=>$vardiya_kod_today,
-            'shift_info'=>$shift_info_today,
-            'visible_from_minus20'=>$start_minus,
-            'external_id' => $emp['external_id']
-        ];
-        if ($is_visible_and_working) $working_now[] = $data;
-        elseif ($current_total_minutes < $start_total) $not_started_yet[] = $data;
-        else $finished[] = $data;
-
-        $added_employee_ids[$emp['id']] = true;
-        continue; // bugünün vardiyası varsa burada bitir
-    }
-
-    // SECONDARY: check previous day's shift for overflow into current view_date
+    // PRIORITY 1: check previous day's shift for overflow into current view_date
+    // This must be checked FIRST to ensure ongoing shifts from previous day are not ignored
     $prev_date = (clone $view_date)->modify('-1 day');
     $vardiya_kod_prev = get_vardiya_kod_for_day($emp['external_id'], $prev_date->format('Y-m-d'));
     $shift_info_prev = calculate_shift_hours($vardiya_kod_prev);
 
     if ($shift_info_prev && !empty($shift_info_prev['wraps'])) {
         $end_total_prev = $shift_info_prev['end_hour'] * 60 + $shift_info_prev['end_minute'];
-        if ($end_total_prev > 0) {
+        if ($end_total_prev > 0 && $current_total_minutes < $end_total_prev) {
+            // Employee is still working from previous day's shift
             $start_total = 0;
             $end_total = $end_total_prev;
 
@@ -365,7 +334,39 @@ foreach ($employees as $emp) {
             else $finished[] = $data;
 
             $added_employee_ids[$emp['id']] = true;
+            continue; // ongoing shift from previous day takes priority
         }
+    }
+
+    // PRIORITY 2: if no ongoing shift from previous day, check today's shift
+    $vardiya_kod_today = get_vardiya_kod_for_day($emp['external_id'], $view_date->format('Y-m-d'));
+    $shift_info_today = calculate_shift_hours($vardiya_kod_today);
+
+    if ($shift_info_today) {
+        // compute start/end in minutes since midnight
+        $start_total = $shift_info_today['start_hour'] * 60 + $shift_info_today['start_minute'];
+        $end_total = $shift_info_today['end_hour'] * 60 + $shift_info_today['end_minute'];
+
+        // NEW: görünürlük başlangıcı (00:00'dan önceye taşmaz)
+        $start_minus = get_visible_start_minute($start_total);
+
+        // determine if current time falls into the visible/active window
+        $is_visible_and_working = in_circular_range($current_total_minutes, $start_minus, $end_total);
+
+        $data = [
+            'id'=>$emp['id'],
+            'name'=>$emp['name'],
+            'birim'=> $emp['birim'] ?? '',
+            'vardiya_kod'=>$vardiya_kod_today,
+            'shift_info'=>$shift_info_today,
+            'visible_from_minus20'=>$start_minus,
+            'external_id' => $emp['external_id']
+        ];
+        if ($is_visible_and_working) $working_now[] = $data;
+        elseif ($current_total_minutes < $start_total) $not_started_yet[] = $data;
+        else $finished[] = $data;
+
+        $added_employee_ids[$emp['id']] = true;
     }
 }
 

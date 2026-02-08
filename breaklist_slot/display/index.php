@@ -55,7 +55,10 @@ function calculate_shift_hours($vardiya_kod) {
     $end_hour = $start_hour + $duration_hours;
     $end_minute = 0;
     
+    // detect wrap (shift continues into next day)
+    $wraps = false;
     if ($end_hour >= 24) {
+        $wraps = true;
         $end_hour = $end_hour % 24;
     }
     
@@ -65,8 +68,41 @@ function calculate_shift_hours($vardiya_kod) {
         'end_hour' => $end_hour,
         'end_minute' => $end_minute,
         'duration' => $duration_hours,
-        'is_extended' => $is_extended
+        'is_extended' => $is_extended,
+        'wraps' => $wraps
     ];
+}
+
+// Helper function to get vardiya kod for a specific day
+function get_vardiya_kod_for_day($external_id, $dateString) {
+    // dateString: 'YYYY-MM-DD'
+    if (function_exists('get_vardiya_kod_for_date')) {
+        try {
+            return get_vardiya_kod_for_date($external_id, $dateString);
+        } catch (Exception $e) {
+            // fallback
+        }
+    }
+    if (function_exists('get_today_vardiya_kod')) {
+        try {
+            $rf = new ReflectionFunction('get_today_vardiya_kod');
+            $params = $rf->getNumberOfParameters();
+            if ($params >= 2) {
+                return get_today_vardiya_kod($external_id, $dateString);
+            } elseif ($params === 1) {
+                return get_today_vardiya_kod($external_id);
+            } else {
+                return get_today_vardiya_kod();
+            }
+        } catch (ReflectionException $e) {
+            try {
+                return get_today_vardiya_kod($external_id);
+            } catch (Exception $e2) {
+                return null;
+            }
+        }
+    }
+    return null;
 }
 
 // Şu anki saati hesapla
@@ -243,8 +279,34 @@ try {
         $minutes_in_day = 24 * 60;
 
         foreach ($hr_employees as $emp) {
+            // Get current date as string
+            $today_str = $current_time->format('Y-m-d');
+            $yesterday_str = (clone $current_time)->modify('-1 day')->format('Y-m-d');
+            
+            // PRIORITY 1: Check previous day's shift for overflow into current day
+            $vardiya_kod_prev = null;
             try {
-                $vardiya_kod = get_today_vardiya_kod($emp['external_id']);
+                $vardiya_kod_prev = get_vardiya_kod_for_day($emp['external_id'], $yesterday_str);
+            } catch (Exception $e) {
+                $vardiya_kod_prev = null;
+            }
+            
+            if ($vardiya_kod_prev && !in_array($vardiya_kod_prev, ['OFF', 'RT'])) {
+                $shift_info_prev = calculate_shift_hours($vardiya_kod_prev);
+                if ($shift_info_prev && !empty($shift_info_prev['wraps'])) {
+                    // Previous day's shift wraps into today
+                    $end_total_prev = $shift_info_prev['end_hour'] * 60 + $shift_info_prev['end_minute'];
+                    if ($end_total_prev > 0 && $current_total_minutes < $end_total_prev) {
+                        // Employee is still working from previous day's shift
+                        $active_employee_ids[] = $emp['id'];
+                        continue; // Skip checking today's shift
+                    }
+                }
+            }
+            
+            // PRIORITY 2: Check today's shift
+            try {
+                $vardiya_kod = get_vardiya_kod_for_day($emp['external_id'], $today_str);
             } catch (Exception $e) {
                 $vardiya_kod = null;
             }
