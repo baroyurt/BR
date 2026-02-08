@@ -344,6 +344,38 @@ try {
     error_log("HR bağlantı hatası (display): " . $e->getMessage());
 }
 
+// ÖN GÖSTERIM: Gece yarısına yakınken yarının vardiya "24" atamalarını göster
+// Pre-show tomorrow's shift "24" assignments when close to midnight
+if ($current_total_minutes >= 1400) { // 23:20 = 1400 minutes (23*60 + 20)
+    try {
+        $tomorrow_date = (clone $view_date)->modify('+1 day');
+        
+        foreach ($all_employees as $emp) {
+            // Skip if already added
+            if (in_array($emp['id'], $active_employee_ids)) continue;
+            
+            // Get tomorrow's shift
+            try {
+                $vardiya_kod_tomorrow = get_vardiya_kod_for_date($emp['external_id'], $tomorrow_date->format('Y-m-d'));
+            } catch (Exception $e) {
+                continue;
+            }
+            
+            // Only show shift "24" or "24+" from tomorrow
+            if ($vardiya_kod_tomorrow && preg_match('/^24\+?$/', $vardiya_kod_tomorrow)) {
+                $shift_info_tomorrow = calculate_shift_hours($vardiya_kod_tomorrow);
+                
+                if ($shift_info_tomorrow) {
+                    // Add to active employees (will be shown)
+                    $active_employee_ids[] = $emp['id'];
+                }
+            }
+        }
+    } catch (Exception $e) {
+        error_log("Pre-show error (display): " . $e->getMessage());
+    }
+}
+
 $active_employee_ids = array_unique($active_employee_ids);
 sort($active_employee_ids);
 
