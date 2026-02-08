@@ -85,7 +85,20 @@ $test_times = [
 echo "\nStatus at different times:\n";
 foreach ($test_times as $test) {
     $is_working = in_circular_range_test($test['minutes'], $start_minus, $end_total);
-    $status = $is_working ? "WORKING" : ($test['minutes'] < $start_total ? "NOT STARTED" : "FINISHED");
+    // For wrapping shifts, use circular logic, not simple comparison
+    if ($is_working) {
+        $status = "WORKING";
+    } else {
+        // Check if we're before the shift start (considering wraps)
+        if ($shift_22plus['wraps']) {
+            // Wrapping shift: NOT STARTED if we're between end and start
+            $is_not_started = in_circular_range_test($test['minutes'], $end_total, $start_total);
+            $status = $is_not_started ? "NOT STARTED" : "FINISHED";
+        } else {
+            // Normal shift: simple comparison
+            $status = ($test['minutes'] < $start_total ? "NOT STARTED" : "FINISHED");
+        }
+    }
     echo "  At {$test['time']}: {$status} " . ($is_working ? "✓" : "");
     if ($test['time'] == '02:00' || $test['time'] == '07:00') {
         echo " (should be WORKING)";
@@ -103,6 +116,10 @@ echo "-----------------------------------------------------------\n";
 $shift_24 = calculate_shift_hours_test('24');
 echo "Shift Info:\n";
 print_r($shift_24);
+
+echo "\nISSUE: Shift 24 incorrectly has wraps=YES due to hour 24 calculation\n";
+echo "  Expected wraps: NO (after normalization, 0-8 doesn't wrap)\n";
+echo "  Actual wraps: " . ($shift_24['wraps'] ? "YES ❌" : "NO") . "\n";
 
 $start_total_24 = $shift_24['start_hour'] * 60 + $shift_24['start_minute'];
 $end_total_24 = $shift_24['end_hour'] * 60 + $shift_24['end_minute'];
@@ -125,7 +142,20 @@ echo "  Actual start_total: {$start_total_24} minutes\n";
 echo "\nStatus at different times (with BUGGY hour 24):\n";
 foreach ($test_times as $test) {
     $is_working = in_circular_range_test($test['minutes'], $start_minus_24, $end_total_24);
-    $status = $is_working ? "WORKING" : ($test['minutes'] < $start_total_24 ? "NOT STARTED" : "FINISHED");
+    // For wrapping shifts, use circular logic
+    if ($is_working) {
+        $status = "WORKING";
+    } else {
+        // Check if we're before the shift start (considering wraps)
+        if ($shift_24['wraps']) {
+            // Wrapping shift: NOT STARTED if we're between end and start
+            $is_not_started = in_circular_range_test($test['minutes'], $end_total_24, $start_total_24);
+            $status = $is_not_started ? "NOT STARTED" : "FINISHED";
+        } else {
+            // Normal shift: simple comparison
+            $status = ($test['minutes'] < $start_total_24 ? "NOT STARTED" : "FINISHED");
+        }
+    }
     echo "  At {$test['time']}: {$status}";
     if ($test['time'] == '02:00' || $test['time'] == '07:00') {
         echo " ❌ (should be WORKING)";

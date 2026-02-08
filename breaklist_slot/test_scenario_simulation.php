@@ -165,7 +165,20 @@ foreach ($test_times as $time) {
         $current_minutes = $time['hour'] * 60 + $time['minute'];
         $is_working = in_circular_range($current_minutes, $start_minus, $end_total);
         
-        $status = $is_working ? "WORKING" : ($current_minutes < $start_total ? "NOT STARTED" : "FINISHED");
+        // Proper status determination for wrapping and non-wrapping shifts
+        if ($is_working) {
+            $status = "WORKING";
+        } else {
+            // Check if we're before the shift start (considering wraps)
+            if ($shift_info['wraps']) {
+                // Wrapping shift: NOT STARTED if we're between end and start
+                $is_not_started = in_circular_range($current_minutes, $end_total, $start_total);
+                $status = $is_not_started ? "NOT STARTED" : "FINISHED";
+            } else {
+                // Normal shift: simple comparison
+                $status = ($current_minutes < $start_total ? "NOT STARTED" : "FINISHED");
+            }
+        }
         echo "  {$emp['name']} ({$emp['code']}): {$status}\n";
     }
 }
