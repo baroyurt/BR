@@ -53,8 +53,8 @@ function calculate_shift_hours($vardiya_kod) {
     $start_hour = $base_hour;
     $start_minute = 0;
     
-    // Normalize start_hour: 24 or higher means it's actually the next day's 00:00, 01:00, etc.
-    // For shift code "24", this means 00:00 of the CURRENT day (not wrapping from previous)
+    // Normalize start_hour: In the system, hour 24 represents 00:00 of the CURRENT day
+    // (not wrapping from previous day). Convert 24+ to 0-23 range.
     if ($start_hour >= 24) {
         $start_hour = $start_hour % 24;
     }
