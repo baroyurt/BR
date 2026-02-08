@@ -270,18 +270,9 @@ function calculate_shift_hours($vardiya_kod) {
     
     $start_hour = $base_hour;
     $start_minute = 0;
-    
-    // Normalize start_hour: In the system, hour 24 represents 00:00 of the CURRENT day
-    // (not wrapping from previous day). Convert 24+ to 0-23 range.
-    if ($start_hour >= 24) {
-        $start_hour = $start_hour % 24;
-    }
-    
     $end_hour = $start_hour + $duration_hours;
     $end_minute = 0;
-    
     // detect wrap (shift continues into next day)
-    // Only wraps if the shift STARTS before midnight and ENDS after midnight
     $wraps = false;
     if ($end_hour >= 24) {
         $wraps = true;
