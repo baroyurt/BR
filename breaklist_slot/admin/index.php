@@ -291,12 +291,64 @@ $working_now = $not_started_yet = $finished = [];
 $added_employee_ids = [];
 
 foreach ($employees as $emp) {
-    // use wrapper to attempt to fetch vardiya kod for the selected view_date
+    // ÖNCE: Önceki günden taşan mesaiyi kontrol et (GECEYARıSı SONRASı İÇİN ÖNEMLİ)
+    // Bu kontrol, önceki günden devam eden mesainin gösterilmesini sağlar
+    $prev_date = (clone $view_date)->modify('-1 day');
+    $vardiya_kod_prev = get_vardiya_kod_for_day($emp['external_id'], $prev_date->format('Y-m-d'));
+    $shift_info_prev = calculate_shift_hours($vardiya_kod_prev);
+
+    // Eğer önceki günün vardiyası gece yarısını geçiyorsa ve hala devam ediyorsa
+    if ($shift_info_prev && !empty($shift_info_prev['wraps'])) {
+        $end_total_prev = $shift_info_prev['end_hour'] * 60 + $shift_info_prev['end_minute'];
+        if ($end_total_prev > 0) {
+            $start_total = 0;
+            $end_total = $end_total_prev;
+
+            // 00:00 başlangıcında geriye taşma yok
+            $start_minus = 0;
+            $is_visible_and_working = in_circular_range($current_total_minutes, $start_minus, $end_total);
+
+            // Eğer çalışan şu anda önceki günün vardiyasında çalışıyorsa
+            if ($is_visible_and_working) {
+                $shift_info_for_today = [
+                    'start_hour' => 0,
+                    'start_minute' => 0,
+                    'end_hour' => $shift_info_prev['end_hour'],
+                    'end_minute' => $shift_info_prev['end_minute'],
+                    'duration' => ($end_total - $start_total) / 60,
+                    'is_extended' => $shift_info_prev['is_extended'],
+                    'wraps' => false
+                ];
+
+                $data = [
+                    'id'=>$emp['id'],
+                    'name'=>$emp['name'],
+                    'birim'=> $emp['birim'] ?? '',
+                    'vardiya_kod'=> $vardiya_kod_prev . ' (önceki gün)',
+                    'shift_info'=>$shift_info_for_today,
+                    'visible_from_minus20'=>$start_minus,
+                    'external_id' => $emp['external_id'],
+                    'from_prev_day' => true
+                ];
+
+                $working_now[] = $data;
+                $added_employee_ids[$emp['id']] = true;
+                continue; // Önceki günden devam eden mesai varsa bugünkü mesaiyi gösterme
+            }
+            // Önceki günden taşan mesai bitti ama bugün başlamamışsa
+            elseif ($current_total_minutes < $end_total) {
+                // Bu durumda aşağıda bugünün mesaisını kontrol edeceğiz
+                // Ama önce önceki günün mesaisini "bitmiş" olarak göstermeyelim
+            }
+        }
+    }
+
+    // SONRA: Bugünün vardiyasını kontrol et
     $vardiya_kod_today = get_vardiya_kod_for_day($emp['external_id'], $view_date->format('Y-m-d'));
     $shift_info_today = calculate_shift_hours($vardiya_kod_today);
 
-    // Primary: if today has a shift and it is not OFF/RT -> show per normal logic
-    if ($shift_info_today) {
+    // Eğer bu çalışan zaten önceki günden devam eden mesaiye eklenmediyse
+    if (!isset($added_employee_ids[$emp['id']]) && $shift_info_today) {
         // compute start/end in minutes since midnight
         $start_total = $shift_info_today['start_hour'] * 60 + $shift_info_today['start_minute'];
         $end_total = $shift_info_today['end_hour'] * 60 + $shift_info_today['end_minute'];
@@ -321,51 +373,6 @@ foreach ($employees as $emp) {
         else $finished[] = $data;
 
         $added_employee_ids[$emp['id']] = true;
-        continue; // bugünün vardiyası varsa burada bitir
-    }
-
-    // SECONDARY: check previous day's shift for overflow into current view_date
-    $prev_date = (clone $view_date)->modify('-1 day');
-    $vardiya_kod_prev = get_vardiya_kod_for_day($emp['external_id'], $prev_date->format('Y-m-d'));
-    $shift_info_prev = calculate_shift_hours($vardiya_kod_prev);
-
-    if ($shift_info_prev && !empty($shift_info_prev['wraps'])) {
-        $end_total_prev = $shift_info_prev['end_hour'] * 60 + $shift_info_prev['end_minute'];
-        if ($end_total_prev > 0) {
-            $start_total = 0;
-            $end_total = $end_total_prev;
-
-            // 00:00 başlangıcında geriye taşma yok
-            $start_minus = 0;
-            $is_visible_and_working = in_circular_range($current_total_minutes, $start_minus, $end_total);
-
-            $shift_info_for_today = [
-                'start_hour' => 0,
-                'start_minute' => 0,
-                'end_hour' => $shift_info_prev['end_hour'],
-                'end_minute' => $shift_info_prev['end_minute'],
-                'duration' => ($end_total - $start_total) / 60,
-                'is_extended' => $shift_info_prev['is_extended'],
-                'wraps' => false
-            ];
-
-            $data = [
-                'id'=>$emp['id'],
-                'name'=>$emp['name'],
-                'birim'=> $emp['birim'] ?? '',
-                'vardiya_kod'=> $vardiya_kod_prev . ' (prev-day overflow)',
-                'shift_info'=>$shift_info_for_today,
-                'visible_from_minus20'=>$start_minus,
-                'external_id' => $emp['external_id'],
-                'from_prev_day' => true
-            ];
-
-            if ($is_visible_and_working) $working_now[] = $data;
-            elseif ($current_total_minutes < $start_total) $not_started_yet[] = $data;
-            else $finished[] = $data;
-
-            $added_employee_ids[$emp['id']] = true;
-        }
     }
 }
 
