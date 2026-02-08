@@ -259,10 +259,11 @@ try {
                 }
                 
                 // Önceki gün vardiyası varsa ve gece yarısını geçiyorsa kontrol et
+                // ANCAK: Vardiya 24:00 veya sonra başlıyorsa, önceki günde başlamıyor demektir
                 if ($vardiya_kod_prev && !in_array($vardiya_kod_prev, ['OFF', 'RT'])) {
                     $shift_info_prev = calculate_shift_hours($vardiya_kod_prev);
                     
-                    if ($shift_info_prev && !empty($shift_info_prev['wraps'])) {
+                    if ($shift_info_prev && !empty($shift_info_prev['wraps']) && $shift_info_prev['start_hour'] < 24) {
                         // Önceki günün mesaisi bugüne taşıyor
                         $end_total_prev = $shift_info_prev['end_hour'] * 60 + $shift_info_prev['end_minute'];
                         

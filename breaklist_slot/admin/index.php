@@ -298,7 +298,9 @@ foreach ($employees as $emp) {
     $shift_info_prev = calculate_shift_hours($vardiya_kod_prev);
 
     // Eğer önceki günün vardiyası gece yarısını geçiyorsa ve hala devam ediyorsa
-    if ($shift_info_prev && !empty($shift_info_prev['wraps'])) {
+    // ANCAK: Vardiya 24:00 veya sonra başlıyorsa (start_hour >= 24), bu önceki günde başlamıyor,
+    // ertesi günde başlıyor demektir. Bu yüzden "önceki gün" olarak gösterilmemeli.
+    if ($shift_info_prev && !empty($shift_info_prev['wraps']) && $shift_info_prev['start_hour'] < 24) {
         $end_total_prev = $shift_info_prev['end_hour'] * 60 + $shift_info_prev['end_minute'];
         if ($end_total_prev > 0) {
             $start_total = 0;
