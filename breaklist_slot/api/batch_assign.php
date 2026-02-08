@@ -28,8 +28,8 @@ try {
         WHERE employee_id = ? AND slot_start = FROM_UNIXTIME(?)
     ");
     $insertStmt = $pdo->prepare("
-        INSERT INTO work_slots (employee_id, area_id, slot_start, slot_end)
-        VALUES (?, ?, FROM_UNIXTIME(?), FROM_UNIXTIME(?))
+        INSERT INTO work_slots (employee_id, area_id, slot_start, slot_end, shift_date)
+        VALUES (?, ?, FROM_UNIXTIME(?), FROM_UNIXTIME(?), ?)
     ");
 
     $pdo->beginTransaction();
@@ -65,7 +65,8 @@ try {
             // Aksi halde yeni atamayı ekle
             // Güvenlik: area_id numeric olması beklenir, zorunlu cast
             $area_id_int = (int)$area_id;
-            $insertStmt->execute([$employee_id, $area_id_int, $slot_start, $slot_end]);
+            $shift_date = date('Y-m-d', $slot_start);
+            $insertStmt->execute([$employee_id, $area_id_int, $slot_start, $slot_end, $shift_date]);
             $insCount = $insertStmt->rowCount();
             if ($insCount) $inserted += $insCount;
 

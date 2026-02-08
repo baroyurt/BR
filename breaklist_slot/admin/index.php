@@ -245,6 +245,68 @@ function get_visible_start_minute($start_total) {
     return max(0, $start_total - 40);
 }
 
+// NEW: Shift completion helper
+// Mark shifts as completed when their end time has passed on their shift_date
+function mark_completed_shifts($pdo, $now_real) {
+    try {
+        // Mark shifts as completed if:
+        // 1. They have a shift_date and slot_end
+        // 2. completed_at is NULL
+        // 3. The current real datetime is past the slot_end time
+        $stmt = $pdo->prepare("
+            UPDATE work_slots 
+            SET completed_at = NOW() 
+            WHERE completed_at IS NULL 
+              AND slot_end IS NOT NULL
+              AND slot_end < NOW()
+        ");
+        $stmt->execute();
+        return $stmt->rowCount();
+    } catch (Exception $e) {
+        // Silent fail - don't break the page if this fails
+        return 0;
+    }
+}
+
+// NEW: Check if employee has completed shift on a specific date
+// A shift is considered "completed" if:
+// 1. Employee has work_slots on that date, AND
+// 2. All work_slots for that date have completed_at set, OR
+// 3. The shift_date is in the past (< current date)
+function has_completed_shift_on_date($pdo, $employee_id, $date_string) {
+    try {
+        // Check if employee had any work on this date
+        $stmt = $pdo->prepare("
+            SELECT COUNT(*) as total,
+                   SUM(CASE WHEN completed_at IS NOT NULL THEN 1 ELSE 0 END) as completed
+            FROM work_slots 
+            WHERE employee_id = ? AND shift_date = ?
+        ");
+        $stmt->execute([$employee_id, $date_string]);
+        $result = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        // If no work slots on this date, not completed (no shift that day)
+        if ($result['total'] == 0) {
+            return false;
+        }
+        
+        // If all work slots are marked completed, shift is complete
+        if ($result['total'] == $result['completed']) {
+            return true;
+        }
+        
+        // Alternative: if the date is in the past (before today), consider it completed
+        $current_date = date('Y-m-d');
+        if ($date_string < $current_date) {
+            return true;
+        }
+        
+        return false;
+    } catch (Exception $e) {
+        return false;
+    }
+}
+
 // VARDİYA HESAPLAMA
 function calculate_shift_hours($vardiya_kod) {
     if (!$vardiya_kod || in_array($vardiya_kod, ['OFF', 'RT'])) return null;
@@ -284,6 +346,10 @@ function calculate_shift_hours($vardiya_kod) {
 
 // PERSONEL ÇEKME
 // -> buraya 'birim' ve 'external_id' sütunu eklendi, böylece UI'da isim altına gösterilebilsin
+
+// NEW: Mark completed shifts before showing employees
+mark_completed_shifts($pdo, $now_real);
+
 $employees = $pdo->query("SELECT id, name, external_id, birim FROM employees WHERE is_active = 1 AND external_id IS NOT NULL ORDER BY name")->fetchAll(PDO::FETCH_ASSOC);
 $working_now = $not_started_yet = $finished = [];
 
@@ -291,8 +357,24 @@ $working_now = $not_started_yet = $finished = [];
 $added_employee_ids = [];
 
 foreach ($employees as $emp) {
+    // NEW: Determine if we're viewing a past day or future day vs real current day
+    $view_date_str = $view_date->format('Y-m-d');
+    $real_date_str = $now_real->format('Y-m-d');
+    $is_viewing_past = ($view_date_str < $real_date_str);
+    $is_viewing_future = ($view_date_str > $real_date_str);
+    $is_viewing_today = ($view_date_str === $real_date_str);
+    
+    // Check if employee has completed their shift on the view_date
+    $has_completed = has_completed_shift_on_date($pdo, $emp['id'], $view_date_str);
+    
+    // KEY FIX: If viewing a past day and employee completed their shift,
+    // don't show them at all (they're done for that day)
+    if ($is_viewing_past && $has_completed) {
+        continue;
+    }
+    
     // use wrapper to attempt to fetch vardiya kod for the selected view_date
-    $vardiya_kod_today = get_vardiya_kod_for_day($emp['external_id'], $view_date->format('Y-m-d'));
+    $vardiya_kod_today = get_vardiya_kod_for_day($emp['external_id'], $view_date_str);
     $shift_info_today = calculate_shift_hours($vardiya_kod_today);
 
     // Primary: if today has a shift and it is not OFF/RT -> show per normal logic
@@ -304,6 +386,25 @@ foreach ($employees as $emp) {
         // NEW: görünürlük başlangıcı (00:00'dan önceye taşmaz)
         $start_minus = get_visible_start_minute($start_total);
 
+        // KEY FIX: When viewing a past day, don't use current time to determine status
+        // All shifts on past days should be considered "finished"
+        if ($is_viewing_past) {
+            // Past day: Show all scheduled employees as "finished" regardless of current time
+            $data = [
+                'id'=>$emp['id'],
+                'name'=>$emp['name'],
+                'birim'=> $emp['birim'] ?? '',
+                'vardiya_kod'=>$vardiya_kod_today,
+                'shift_info'=>$shift_info_today,
+                'visible_from_minus20'=>$start_minus,
+                'external_id' => $emp['external_id']
+            ];
+            $finished[] = $data;
+            $added_employee_ids[$emp['id']] = true;
+            continue;
+        }
+
+        // For current day or future: use time-based logic
         // determine if current time falls into the visible/active window
         $is_visible_and_working = in_circular_range($current_total_minutes, $start_minus, $end_total);
 
@@ -337,8 +438,7 @@ foreach ($employees as $emp) {
 
             // 00:00 başlangıcında geriye taşma yok
             $start_minus = 0;
-            $is_visible_and_working = in_circular_range($current_total_minutes, $start_minus, $end_total);
-
+            
             $shift_info_for_today = [
                 'start_hour' => 0,
                 'start_minute' => 0,
@@ -348,6 +448,26 @@ foreach ($employees as $emp) {
                 'is_extended' => $shift_info_prev['is_extended'],
                 'wraps' => false
             ];
+            
+            // KEY FIX: For previous day overflow, also check if viewing past
+            if ($is_viewing_past) {
+                // Past day: Show as finished
+                $data = [
+                    'id'=>$emp['id'],
+                    'name'=>$emp['name'],
+                    'birim'=> $emp['birim'] ?? '',
+                    'vardiya_kod'=> $vardiya_kod_prev . ' (prev-day overflow)',
+                    'shift_info'=>$shift_info_for_today,
+                    'visible_from_minus20'=>$start_minus,
+                    'external_id' => $emp['external_id'],
+                    'from_prev_day' => true
+                ];
+                $finished[] = $data;
+                $added_employee_ids[$emp['id']] = true;
+                continue;
+            }
+            
+            $is_visible_and_working = in_circular_range($current_total_minutes, $start_minus, $end_total);
 
             $data = [
                 'id'=>$emp['id'],
