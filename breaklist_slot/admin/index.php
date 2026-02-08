@@ -424,23 +424,45 @@ if ($actual_current_total_minutes >= 1400) { // 23:20 = 1400 minutes (23*60 + 20
     
     // Debug logging
     if (isset($_GET['debug']) && $_GET['debug'] == '1') {
+        error_log("==================== PRE-SHOW START ====================");
         error_log("PRE-SHOW: Actual current time >= 23:20 (" . sprintf("%02d:%02d", $actual_current_hour, $actual_current_minute) . ")");
         error_log("PRE-SHOW: Actual today = " . $actual_today->format('Y-m-d'));
         error_log("PRE-SHOW: Actual tomorrow = " . $actual_tomorrow->format('Y-m-d'));
         error_log("PRE-SHOW: View date = " . $view_date->format('Y-m-d'));
+        error_log("PRE-SHOW: Total employees to check = " . count($employees));
+        error_log("PRE-SHOW: Already added employees = " . count($added_employee_ids));
     }
     
     $preshow_count = 0;
+    $preshow_skipped = 0;
+    $preshow_no_shift = 0;
+    $preshow_wrong_shift = 0;
+    
     foreach ($employees as $emp) {
         // Skip if already added
-        if (isset($added_employee_ids[$emp['id']])) continue;
+        if (isset($added_employee_ids[$emp['id']])) {
+            $preshow_skipped++;
+            if (isset($_GET['debug']) && $_GET['debug'] == '1') {
+                error_log("PRE-SHOW: Skipping " . $emp['name'] . " (already added)");
+            }
+            continue;
+        }
         
         // Get tomorrow's shift (actual tomorrow, not view_date tomorrow)
         $vardiya_kod_tomorrow = get_vardiya_kod_for_day($emp['external_id'], $actual_tomorrow->format('Y-m-d'));
         
-        // Debug logging
-        if (isset($_GET['debug']) && $_GET['debug'] == '1' && $vardiya_kod_tomorrow && preg_match('/^24/', $vardiya_kod_tomorrow)) {
-            error_log("PRE-SHOW: " . $emp['name'] . " has tomorrow shift: " . $vardiya_kod_tomorrow);
+        // Debug logging for all employees
+        if (isset($_GET['debug']) && $_GET['debug'] == '1') {
+            if ($vardiya_kod_tomorrow) {
+                error_log("PRE-SHOW: " . $emp['name'] . " has tomorrow shift: " . $vardiya_kod_tomorrow);
+            } else {
+                error_log("PRE-SHOW: " . $emp['name'] . " has NO tomorrow shift");
+            }
+        }
+        
+        if (!$vardiya_kod_tomorrow) {
+            $preshow_no_shift++;
+            continue;
         }
         
         // Only show shift "24" or "24+" from tomorrow
@@ -472,15 +494,30 @@ if ($actual_current_total_minutes >= 1400) { // 23:20 = 1400 minutes (23*60 + 20
                 
                 // Debug logging
                 if (isset($_GET['debug']) && $_GET['debug'] == '1') {
-                    error_log("PRE-SHOW: Added " . $emp['name'] . " to not_started_yet");
+                    error_log("PRE-SHOW: ✅ Added " . $emp['name'] . " to not_started_yet (shift: " . $vardiya_kod_tomorrow . ")");
                 }
+            } else {
+                if (isset($_GET['debug']) && $_GET['debug'] == '1') {
+                    error_log("PRE-SHOW: ❌ " . $emp['name'] . " shift info calculation failed");
+                }
+            }
+        } else {
+            $preshow_wrong_shift++;
+            if (isset($_GET['debug']) && $_GET['debug'] == '1') {
+                error_log("PRE-SHOW: " . $emp['name'] . " has wrong shift type: " . $vardiya_kod_tomorrow);
             }
         }
     }
     
     // Debug logging
     if (isset($_GET['debug']) && $_GET['debug'] == '1') {
-        error_log("PRE-SHOW: Total added = " . $preshow_count);
+        error_log("PRE-SHOW: Summary:");
+        error_log("PRE-SHOW:   - Added: " . $preshow_count);
+        error_log("PRE-SHOW:   - Skipped (already added): " . $preshow_skipped);
+        error_log("PRE-SHOW:   - No shift tomorrow: " . $preshow_no_shift);
+        error_log("PRE-SHOW:   - Wrong shift type: " . $preshow_wrong_shift);
+        error_log("PRE-SHOW: not_started_yet array now has " . count($not_started_yet) . " employees");
+        error_log("==================== PRE-SHOW END ====================");
     }
 } else {
     // Debug logging
