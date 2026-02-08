@@ -7,6 +7,30 @@
 require_once 'config.php';
 require_once 'config_hr.php';
 
+// Wrapper function to get shift code for a specific day
+function get_vardiya_kod_for_day($external_id, $dateString) {
+    // dateString: 'YYYY-MM-DD'
+    // Try the date-specific function first
+    if (function_exists('get_vardiya_kod_for_date')) {
+        try {
+            return get_vardiya_kod_for_date($external_id, $dateString);
+        } catch (Exception $e) {
+            // Fallback to today function
+        }
+    }
+    
+    // Fallback to today function
+    if (function_exists('get_today_vardiya_kod')) {
+        try {
+            return get_today_vardiya_kod($external_id);
+        } catch (Exception $e) {
+            return null;
+        }
+    }
+    
+    return null;
+}
+
 echo "<h1>Shift 24 Filter & Pre-Show Debug</h1>";
 echo "<p>Current time: " . date('Y-m-d H:i:s') . "</p>";
 
