@@ -487,14 +487,14 @@ if ($actual_current_total_minutes >= 1400) { // 23:20 = 1400 minutes (23*60 + 20
                     'external_id' => $emp['external_id']
                 ];
                 
-                // Add to "not started yet" since shift hasn't begun
-                $not_started_yet[] = $data;
+                // Add to "working now" so admin can assign stations/locations
+                $working_now[] = $data;
                 $added_employee_ids[$emp['id']] = true;
                 $preshow_count++;
                 
                 // Debug logging
                 if (isset($_GET['debug']) && $_GET['debug'] == '1') {
-                    error_log("PRE-SHOW: ✅ Added " . $emp['name'] . " to not_started_yet (shift: " . $vardiya_kod_tomorrow . ")");
+                    error_log("PRE-SHOW: ✅ Added " . $emp['name'] . " to working_now (shift: " . $vardiya_kod_tomorrow . ")");
                 }
             } else {
                 if (isset($_GET['debug']) && $_GET['debug'] == '1') {
@@ -516,7 +516,8 @@ if ($actual_current_total_minutes >= 1400) { // 23:20 = 1400 minutes (23*60 + 20
         error_log("PRE-SHOW:   - Skipped (already added): " . $preshow_skipped);
         error_log("PRE-SHOW:   - No shift tomorrow: " . $preshow_no_shift);
         error_log("PRE-SHOW:   - Wrong shift type: " . $preshow_wrong_shift);
-        error_log("PRE-SHOW: not_started_yet array now has " . count($not_started_yet) . " employees");
+        error_log("PRE-SHOW: working_now array now has " . count($working_now) . " employees");
+        error_log("PRE-SHOW: not_started_yet array has " . count($not_started_yet) . " employees");
         error_log("==================== PRE-SHOW END ====================");
     }
 } else {
