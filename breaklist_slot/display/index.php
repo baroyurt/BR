@@ -348,7 +348,9 @@ try {
 // Pre-show tomorrow's shift "24" assignments when close to midnight
 if ($current_total_minutes >= 1400) { // 23:20 = 1400 minutes (23*60 + 20)
     try {
-        $tomorrow_date = (clone $view_date)->modify('+1 day');
+        // Use actual current date for tomorrow
+        $actual_today = new DateTime('now', new DateTimeZone('Europe/Nicosia'));
+        $actual_tomorrow = (clone $actual_today)->modify('+1 day');
         
         foreach ($all_employees as $emp) {
             // Skip if already added
@@ -356,7 +358,7 @@ if ($current_total_minutes >= 1400) { // 23:20 = 1400 minutes (23*60 + 20)
             
             // Get tomorrow's shift
             try {
-                $vardiya_kod_tomorrow = get_vardiya_kod_for_date($emp['external_id'], $tomorrow_date->format('Y-m-d'));
+                $vardiya_kod_tomorrow = get_vardiya_kod_for_date($emp['external_id'], $actual_tomorrow->format('Y-m-d'));
             } catch (Exception $e) {
                 continue;
             }

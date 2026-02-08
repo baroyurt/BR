@@ -217,6 +217,13 @@ $current_hour = (int)$current_time->format('H');
 $current_minute = (int)$current_time->format('i');
 $current_total_minutes = $current_hour * 60 + $current_minute;
 
+// For pre-show feature, we need the ACTUAL current time, not view_date time
+// This ensures pre-show works correctly even when viewing past/future dates
+$actual_now = new DateTime('now', new DateTimeZone('Europe/Nicosia'));
+$actual_current_hour = (int)$actual_now->format('H');
+$actual_current_minute = (int)$actual_now->format('i');
+$actual_current_total_minutes = $actual_current_hour * 60 + $actual_current_minute;
+
 // NOTU ÇEK
 $display_note = '';
 try {
@@ -409,13 +416,18 @@ foreach ($employees as $emp) {
 
 // ÖN GÖSTERIM: Gece yarısına yakınken yarının vardiya "24" atamalarını göster
 // Pre-show tomorrow's shift "24" assignments when close to midnight
-if ($current_total_minutes >= 1400) { // 23:20 = 1400 minutes (23*60 + 20)
-    $tomorrow_date = (clone $view_date)->modify('+1 day');
+// IMPORTANT: Use actual current time, not view_date time, so this works even when viewing other dates
+if ($actual_current_total_minutes >= 1400) { // 23:20 = 1400 minutes (23*60 + 20)
+    // Calculate tomorrow from actual current date, not view_date
+    $actual_today = new DateTime('now', new DateTimeZone('Europe/Nicosia'));
+    $actual_tomorrow = (clone $actual_today)->modify('+1 day');
     
     // Debug logging
     if (isset($_GET['debug']) && $_GET['debug'] == '1') {
-        error_log("PRE-SHOW: Current time >= 23:20, checking tomorrow's shifts");
-        error_log("PRE-SHOW: Tomorrow date = " . $tomorrow_date->format('Y-m-d'));
+        error_log("PRE-SHOW: Actual current time >= 23:20 (" . sprintf("%02d:%02d", $actual_current_hour, $actual_current_minute) . ")");
+        error_log("PRE-SHOW: Actual today = " . $actual_today->format('Y-m-d'));
+        error_log("PRE-SHOW: Actual tomorrow = " . $actual_tomorrow->format('Y-m-d'));
+        error_log("PRE-SHOW: View date = " . $view_date->format('Y-m-d'));
     }
     
     $preshow_count = 0;
@@ -423,8 +435,8 @@ if ($current_total_minutes >= 1400) { // 23:20 = 1400 minutes (23*60 + 20)
         // Skip if already added
         if (isset($added_employee_ids[$emp['id']])) continue;
         
-        // Get tomorrow's shift
-        $vardiya_kod_tomorrow = get_vardiya_kod_for_day($emp['external_id'], $tomorrow_date->format('Y-m-d'));
+        // Get tomorrow's shift (actual tomorrow, not view_date tomorrow)
+        $vardiya_kod_tomorrow = get_vardiya_kod_for_day($emp['external_id'], $actual_tomorrow->format('Y-m-d'));
         
         // Debug logging
         if (isset($_GET['debug']) && $_GET['debug'] == '1' && $vardiya_kod_tomorrow && preg_match('/^24/', $vardiya_kod_tomorrow)) {
@@ -473,7 +485,7 @@ if ($current_total_minutes >= 1400) { // 23:20 = 1400 minutes (23*60 + 20)
 } else {
     // Debug logging
     if (isset($_GET['debug']) && $_GET['debug'] == '1') {
-        error_log("PRE-SHOW: Skipped (current time " . sprintf("%02d:%02d", $current_hour, $current_minute) . " < 23:20)");
+        error_log("PRE-SHOW: Skipped (actual current time " . sprintf("%02d:%02d", $actual_current_hour, $actual_current_minute) . " < 23:20)");
     }
 }
 
