@@ -293,6 +293,11 @@ try {
             $shift_info = calculate_shift_hours($vardiya_kod);
             if (!$shift_info) continue;
             
+            // Eğer vardiya yarın başlıyorsa (start_hour >= 24), bugün gösterilmemeli
+            if ($shift_info['start_hour'] >= 24) {
+                continue;
+            }
+            
             $start_total = $shift_info['start_hour'] * 60 + $shift_info['start_minute']; // 0..1439
             $end_total = $shift_info['end_hour'] * 60 + $shift_info['end_minute']; // 0..1439 (may be < start_total for night shift)
 
