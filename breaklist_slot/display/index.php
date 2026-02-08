@@ -53,6 +53,13 @@ function calculate_shift_hours($vardiya_kod) {
     $start_hour = $base_hour;
     $start_minute = 0;
     
+    // Detect if shift starts at or after midnight (24:00+)
+    // These shifts are assigned to current day but execute on next day
+    $wraps = false;
+    if ($start_hour >= 24) {
+        $wraps = true;  // Mark as wrapping to next day
+    }
+    
     // Normalize start_hour: hour 24 should be treated as hour 0 (midnight)
     if ($start_hour >= 24) {
         $start_hour = $start_hour % 24;
@@ -62,7 +69,7 @@ function calculate_shift_hours($vardiya_kod) {
     $end_minute = 0;
     
     // Gece yarısını geçen mesai kontrolü
-    $wraps = false;
+    // Also detect wrap if shift continues past midnight
     if ($end_hour >= 24) {
         $wraps = true;
         $end_hour = $end_hour % 24;
