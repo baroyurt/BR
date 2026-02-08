@@ -52,6 +52,12 @@ function calculate_shift_hours($vardiya_kod) {
     
     $start_hour = $base_hour;
     $start_minute = 0;
+    
+    // Normalize start_hour: hour 24 should be treated as hour 0 (midnight)
+    if ($start_hour >= 24) {
+        $start_hour = $start_hour % 24;
+    }
+    
     $end_hour = $start_hour + $duration_hours;
     $end_minute = 0;
     
@@ -259,12 +265,10 @@ try {
                 }
                 
                 // Önceki gün vardiyası varsa ve gece yarısını geçiyorsa kontrol et
-                // ANCAK: Vardiya 24:00 veya sonra başlıyorsa, önceki günde başlamıyor
-                // (start_hour < 24 kontrolü ile sadece önceki günde başlayanları seçiyoruz)
                 if ($vardiya_kod_prev && !in_array($vardiya_kod_prev, ['OFF', 'RT'])) {
                     $shift_info_prev = calculate_shift_hours($vardiya_kod_prev);
                     
-                    if ($shift_info_prev && !empty($shift_info_prev['wraps']) && $shift_info_prev['start_hour'] < 24) {
+                    if ($shift_info_prev && !empty($shift_info_prev['wraps'])) {
                         // Önceki günün mesaisi bugüne taşıyor
                         $end_total_prev = $shift_info_prev['end_hour'] * 60 + $shift_info_prev['end_minute'];
                         
@@ -292,12 +296,6 @@ try {
             
             $shift_info = calculate_shift_hours($vardiya_kod);
             if (!$shift_info) continue;
-            
-            // Eğer vardiya yarın veya daha sonra başlıyorsa (start_hour >= 24), bugün gösterilmemeli
-            // Not: Vardiya kodu "24" → start_hour = 24 (gece yarısı = yarının başlangıcı)
-            if ($shift_info['start_hour'] >= 24) {
-                continue;
-            }
             
             $start_total = $shift_info['start_hour'] * 60 + $shift_info['start_minute']; // 0..1439
             $end_total = $shift_info['end_hour'] * 60 + $shift_info['end_minute']; // 0..1439 (may be < start_total for night shift)

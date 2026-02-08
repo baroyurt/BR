@@ -270,8 +270,15 @@ function calculate_shift_hours($vardiya_kod) {
     
     $start_hour = $base_hour;
     $start_minute = 0;
+    
+    // Normalize start_hour: hour 24 should be treated as hour 0 (midnight)
+    if ($start_hour >= 24) {
+        $start_hour = $start_hour % 24;
+    }
+    
     $end_hour = $start_hour + $duration_hours;
     $end_minute = 0;
+    
     // detect wrap (shift continues into next day)
     $wraps = false;
     if ($end_hour >= 24) {
@@ -298,10 +305,7 @@ foreach ($employees as $emp) {
     $shift_info_prev = calculate_shift_hours($vardiya_kod_prev);
 
     // Eğer önceki günün vardiyası gece yarısını geçiyorsa ve hala devam ediyorsa
-    // ANCAK: Vardiya 24:00 veya sonra başlıyorsa, bu önceki günde başlamıyor,
-    // ertesi günde başlıyor demektir (start_hour < 24 kontrolü ile önceki günde başlayanları seçiyoruz).
-    // Bu yüzden sadece start_hour < 24 olanlar "önceki gün" olarak gösterilmeli.
-    if ($shift_info_prev && !empty($shift_info_prev['wraps']) && $shift_info_prev['start_hour'] < 24) {
+    if ($shift_info_prev && !empty($shift_info_prev['wraps'])) {
         $end_total_prev = $shift_info_prev['end_hour'] * 60 + $shift_info_prev['end_minute'];
         if ($end_total_prev > 0) {
             $start_total = 0;
@@ -351,9 +355,7 @@ foreach ($employees as $emp) {
     $shift_info_today = calculate_shift_hours($vardiya_kod_today);
 
     // Eğer bu çalışan zaten önceki günden devam eden mesaiye eklenmediyse
-    // VE vardiya bugün başlıyorsa (start_hour < 24)
-    // Not: start_hour >= 24 olan vardiyalar aslında yarın başlıyor, bugün gösterilmemeli
-    if (!isset($added_employee_ids[$emp['id']]) && $shift_info_today && $shift_info_today['start_hour'] < 24) {
+    if (!isset($added_employee_ids[$emp['id']]) && $shift_info_today) {
         // compute start/end in minutes since midnight
         $start_total = $shift_info_today['start_hour'] * 60 + $shift_info_today['start_minute'];
         $end_total = $shift_info_today['end_hour'] * 60 + $shift_info_today['end_minute'];
