@@ -361,7 +361,15 @@ foreach ($employees as $emp) {
     $shift_info_today = calculate_shift_hours($vardiya_kod_today);
 
     // Eğer bu çalışan zaten önceki günden devam eden mesaiye eklenmediyse
+    // VE vardiya kodu "24" ile başlamıyorsa (24, 24+ gibi)
+    // Çünkü "24" bugün başlamaz, gece yarısı (yarın) başlar
     if (!isset($added_employee_ids[$emp['id']]) && $shift_info_today) {
+        // Filter out shifts starting with "24" (24, 24+, etc) from today's list
+        // These shifts start at 24:00 = tomorrow's 00:00, not today
+        if (preg_match('/^24\+?$/', $vardiya_kod_today)) {
+            continue; // Skip this shift for today
+        }
+        
         // compute start/end in minutes since midnight
         $start_total = $shift_info_today['start_hour'] * 60 + $shift_info_today['start_minute'];
         $end_total = $shift_info_today['end_hour'] * 60 + $shift_info_today['end_minute'];

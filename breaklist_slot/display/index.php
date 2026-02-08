@@ -301,6 +301,12 @@ try {
                 continue;
             }
             
+            // Filter out shifts starting with "24" (24, 24+, etc) from today's list
+            // These shifts start at 24:00 = tomorrow's 00:00, not today
+            if (preg_match('/^24\+?$/', $vardiya_kod)) {
+                continue; // Skip this shift for today
+            }
+            
             $shift_info = calculate_shift_hours($vardiya_kod);
             if (!$shift_info) continue;
             
