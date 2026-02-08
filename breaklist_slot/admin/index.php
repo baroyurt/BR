@@ -260,7 +260,7 @@ function mark_completed_shifts($pdo) {
             UPDATE work_slots 
             SET completed_at = NOW() 
             WHERE completed_at IS NULL 
-              AND slot_end IS NOT NULL
+              AND slot_end IS NOT NULL 
               AND slot_end < NOW()
         ");
         $stmt->execute();
@@ -441,7 +441,7 @@ foreach ($employees as $emp) {
 
             // 00:00 başlangıcında geriye taşma yok
             $start_minus = 0;
-            
+
             $shift_info_for_today = [
                 'start_hour' => 0,
                 'start_minute' => 0,
@@ -451,7 +451,7 @@ foreach ($employees as $emp) {
                 'is_extended' => $shift_info_prev['is_extended'],
                 'wraps' => false
             ];
-            
+
             // KEY FIX: For previous day overflow, also check if viewing past
             if ($is_viewing_past) {
                 // Past day: Show as finished
