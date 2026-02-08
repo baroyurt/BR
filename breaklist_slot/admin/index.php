@@ -200,6 +200,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['get_photo'])) {
 date_default_timezone_set('Europe/Nicosia');
 
 // ---------------------------
+// LATE-NIGHT SHIFT THRESHOLD
+// ---------------------------
+// Shifts starting at this hour or later are considered to belong to the NEXT day
+// for display purposes. This handles the case where night shifts (22:00-06:00, etc.)
+// should appear on the day they end, not the day they start.
+define('LATE_NIGHT_SHIFT_THRESHOLD', 22);
+
+// ---------------------------
 // current / view time adjustments (day_offset kullanılıyor)
 // ---------------------------
 $now_real = new DateTime('now', new DateTimeZone('Europe/Nicosia'));
@@ -297,10 +305,12 @@ foreach ($employees as $emp) {
 
     // Primary: if today has a shift and it is not OFF/RT -> show per normal logic
     if ($shift_info_today) {
-        // IMPORTANT: Shifts starting at 22:00 or later belong to the NEXT day
-        // Skip them here; they will be picked up as "previous day overflow" on the next day
-        if ($shift_info_today['start_hour'] >= 22) {
-            // This late-night shift belongs to the next day, not today
+        // IMPORTANT: Late-night shifts (starting at LATE_NIGHT_SHIFT_THRESHOLD or later) belong to the NEXT day
+        // These shifts are skipped here and will be picked up by the SECONDARY check below
+        // when viewing the next day. This coordination ensures night shifts appear on the
+        // correct day (the day they END, not the day they START).
+        if ($shift_info_today['start_hour'] >= LATE_NIGHT_SHIFT_THRESHOLD) {
+            // This late-night shift will be displayed on the next day instead
             // Skip it and don't add to any list for today
             continue;
         }
@@ -332,13 +342,16 @@ foreach ($employees as $emp) {
         continue; // bugünün vardiyası varsa burada bitir
     }
 
-    // SECONDARY: check previous day's shift for late-night shifts (22:00+) that belong to today
+    // SECONDARY: check previous day's shift for late-night shifts (>=LATE_NIGHT_SHIFT_THRESHOLD) that belong to today
+    // This section works in coordination with the PRIMARY check above, which skips late-night
+    // shifts on their original day. Here we pick up those same shifts and display them on the
+    // day they actually belong to (the next day).
     $prev_date = (clone $view_date)->modify('-1 day');
     $vardiya_kod_prev = get_vardiya_kod_for_day($emp['external_id'], $prev_date->format('Y-m-d'));
     $shift_info_prev = calculate_shift_hours($vardiya_kod_prev);
 
-    // Handle shifts starting at 22:00 or later from the previous day
-    if ($shift_info_prev && $shift_info_prev['start_hour'] >= 22) {
+    // Handle shifts starting at LATE_NIGHT_SHIFT_THRESHOLD or later from the previous day
+    if ($shift_info_prev && $shift_info_prev['start_hour'] >= LATE_NIGHT_SHIFT_THRESHOLD) {
         // This late-night shift from the previous day belongs to today
         $start_total = $shift_info_prev['start_hour'] * 60 + $shift_info_prev['start_minute'];
         $end_total = $shift_info_prev['end_hour'] * 60 + $shift_info_prev['end_minute'];
@@ -365,7 +378,9 @@ foreach ($employees as $emp) {
         
         $added_employee_ids[$emp['id']] = true;
     }
-    // Also handle wrapping shifts that start before 22:00 but wrap past midnight
+    // Also handle wrapping shifts that start before LATE_NIGHT_SHIFT_THRESHOLD but wrap past midnight
+    // (e.g., shift K: 20:00-04:00). These shifts are NOT considered late-night shifts and
+    // remain on their original day, but we still need to show the overflow portion on the next day.
     elseif ($shift_info_prev && !empty($shift_info_prev['wraps'])) {
         $end_total_prev = $shift_info_prev['end_hour'] * 60 + $shift_info_prev['end_minute'];
         if ($end_total_prev > 0) {
