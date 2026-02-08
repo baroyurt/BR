@@ -55,7 +55,10 @@ function calculate_shift_hours($vardiya_kod) {
     $end_hour = $start_hour + $duration_hours;
     $end_minute = 0;
     
+    // Gece yarısını geçen mesai kontrolü
+    $wraps = false;
     if ($end_hour >= 24) {
+        $wraps = true;
         $end_hour = $end_hour % 24;
     }
     
@@ -65,7 +68,8 @@ function calculate_shift_hours($vardiya_kod) {
         'end_hour' => $end_hour,
         'end_minute' => $end_minute,
         'duration' => $duration_hours,
-        'is_extended' => $is_extended
+        'is_extended' => $is_extended,
+        'wraps' => $wraps
     ];
 }
 
@@ -243,6 +247,37 @@ try {
         $minutes_in_day = 24 * 60;
 
         foreach ($hr_employees as $emp) {
+            // ÖNCE: Önceki günden taşan mesaiyi kontrol et
+            try {
+                // Önceki gün tarihi hesapla
+                $prev_date = (clone $current_time)->modify('-1 day');
+                $vardiya_kod_prev = null;
+                
+                // get_vardiya_kod_for_date fonksiyonu varsa kullan, yoksa sadece bugünkü vardiyayı kontrol et
+                if (function_exists('get_vardiya_kod_for_date')) {
+                    $vardiya_kod_prev = get_vardiya_kod_for_date($emp['external_id'], $prev_date->format('Y-m-d'));
+                }
+                
+                // Önceki gün vardiyası varsa ve gece yarısını geçiyorsa kontrol et
+                if ($vardiya_kod_prev && !in_array($vardiya_kod_prev, ['OFF', 'RT'])) {
+                    $shift_info_prev = calculate_shift_hours($vardiya_kod_prev);
+                    
+                    if ($shift_info_prev && !empty($shift_info_prev['wraps'])) {
+                        // Önceki günün mesaisi bugüne taşıyor
+                        $end_total_prev = $shift_info_prev['end_hour'] * 60 + $shift_info_prev['end_minute'];
+                        
+                        if ($end_total_prev > 0 && $current_total_minutes < $end_total_prev) {
+                            // Çalışan hala önceki günün mesaisinde
+                            $active_employee_ids[] = $emp['id'];
+                            continue; // Bugünün mesaisını kontrol etme
+                        }
+                    }
+                }
+            } catch (Exception $e) {
+                // Önceki gün kontrolü başarısız, bugünkü mesaiyi kontrol et
+            }
+            
+            // SONRA: Bugünün vardiyasını kontrol et
             try {
                 $vardiya_kod = get_today_vardiya_kod($emp['external_id']);
             } catch (Exception $e) {
