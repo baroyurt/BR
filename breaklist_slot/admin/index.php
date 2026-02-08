@@ -333,6 +333,12 @@ function calculate_shift_hours($vardiya_kod) {
     
     if ($base_hour === null) return null;
     
+    // FIX: Normalize hour 24 to hour 0 (midnight)
+    // Hour 24 (24:00) is the same as hour 0 (00:00) of the next day
+    if ($base_hour >= 24) {
+        $base_hour = $base_hour % 24;
+    }
+    
     $start_hour = $base_hour;
     $start_minute = 0;
     $end_hour = $start_hour + $duration_hours;
