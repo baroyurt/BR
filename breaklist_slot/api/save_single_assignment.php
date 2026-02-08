@@ -29,13 +29,14 @@ try {
     ");
     $stmt->execute([$employee_id, $slot_start]);
     
-    // Eğer area_id boş değilse yeni atamayı ekle
+    // Eğer area_id boş değilse yeni atamayı ekle - shift_date'i slot_start'ın tarihine göre belirle
     if ($area_id !== '') {
+        $shift_date = date('Y-m-d', $slot_start);
         $stmt = $pdo->prepare("
-            INSERT INTO work_slots (employee_id, area_id, slot_start, slot_end)
-            VALUES (?, ?, FROM_UNIXTIME(?), FROM_UNIXTIME(?))
+            INSERT INTO work_slots (employee_id, area_id, slot_start, slot_end, shift_date)
+            VALUES (?, ?, FROM_UNIXTIME(?), FROM_UNIXTIME(?), ?)
         ");
-        $stmt->execute([$employee_id, $area_id, $slot_start, $slot_end]);
+        $stmt->execute([$employee_id, $area_id, $slot_start, $slot_end, $shift_date]);
     }
     
     echo json_encode([
