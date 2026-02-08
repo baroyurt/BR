@@ -259,7 +259,8 @@ try {
                 }
                 
                 // Önceki gün vardiyası varsa ve gece yarısını geçiyorsa kontrol et
-                // ANCAK: Vardiya 24:00 veya sonra başlıyorsa, önceki günde başlamıyor demektir
+                // ANCAK: Vardiya 24:00 veya sonra başlıyorsa, önceki günde başlamıyor
+                // (start_hour < 24 kontrolü ile sadece önceki günde başlayanları seçiyoruz)
                 if ($vardiya_kod_prev && !in_array($vardiya_kod_prev, ['OFF', 'RT'])) {
                     $shift_info_prev = calculate_shift_hours($vardiya_kod_prev);
                     
