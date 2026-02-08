@@ -367,8 +367,17 @@ foreach ($employees as $emp) {
         // Filter out shifts "24" or "24+" from today's list
         // These shifts start at 24:00 = tomorrow's 00:00, not today
         if (preg_match('/^24\+?$/', $vardiya_kod_today)) {
+            // Debug logging (enable with ?debug=1)
+            if (isset($_GET['debug']) && $_GET['debug'] == '1') {
+                error_log("FILTER: " . $emp['name'] . " has shift " . $vardiya_kod_today . " - FILTERED");
+            }
             $added_employee_ids[$emp['id']] = true; // Mark as processed
             continue; // Skip this shift for today
+        }
+        
+        // Debug logging (enable with ?debug=1)
+        if (isset($_GET['debug']) && $_GET['debug'] == '1' && preg_match('/^24/', $vardiya_kod_today)) {
+            error_log("PASS: " . $emp['name'] . " has shift " . $vardiya_kod_today . " - NOT FILTERED (shouldn't happen!)");
         }
         
         // compute start/end in minutes since midnight
