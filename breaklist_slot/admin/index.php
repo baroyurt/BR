@@ -367,6 +367,7 @@ foreach ($employees as $emp) {
         // Filter out shifts "24" or "24+" from today's list
         // These shifts start at 24:00 = tomorrow's 00:00, not today
         if (preg_match('/^24\+?$/', $vardiya_kod_today)) {
+            $added_employee_ids[$emp['id']] = true; // Mark as processed
             continue; // Skip this shift for today
         }
         
