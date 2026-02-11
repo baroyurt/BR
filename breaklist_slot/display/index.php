@@ -301,9 +301,10 @@ try {
                 continue;
             }
             
-            // Filter out shifts "24" or "24+" from today's list
-            // These shifts start at 24:00 = tomorrow's 00:00, not today
-            if (preg_match('/^24\+?$/', $vardiya_kod)) {
+            // Filter out shifts "24", "24+", "22", "22+" from today's list
+            // Shift 24 starts at 24:00 = tomorrow's 00:00, not today
+            // Shift 22 starts at 22:00 = tonight, should be pre-shown at 21:20
+            if (preg_match('/^(24|22)\+?$/', $vardiya_kod)) {
                 continue; // Skip this shift for today
             }
             
@@ -344,9 +345,9 @@ try {
     error_log("HR bağlantı hatası (display): " . $e->getMessage());
 }
 
-// ÖN GÖSTERIM: Gece yarısına yakınken yarının vardiya "24" atamalarını göster
-// Pre-show tomorrow's shift "24" assignments when close to midnight
-if ($current_total_minutes >= 1400) { // 23:20 = 1400 minutes (23*60 + 20)
+// ÖN GÖSTERIM: Gece yarısına/akşama yakınken yarının vardiya "24" ve "22" atamalarını göster
+// Pre-show tomorrow's shift "24" and "22" assignments when close to midnight/evening
+if ($current_total_minutes >= 1280) { // 21:20 = 1280 minutes (21*60 + 20)
     try {
         // Use actual current date for tomorrow
         $actual_today = new DateTime('now', new DateTimeZone('Europe/Nicosia'));
@@ -363,8 +364,8 @@ if ($current_total_minutes >= 1400) { // 23:20 = 1400 minutes (23*60 + 20)
                 continue;
             }
             
-            // Only show shift "24" or "24+" from tomorrow
-            if ($vardiya_kod_tomorrow && preg_match('/^24\+?$/', $vardiya_kod_tomorrow)) {
+            // Show shift "24", "24+", "22", or "22+" from tomorrow
+            if ($vardiya_kod_tomorrow && preg_match('/^(24|22)\+?$/', $vardiya_kod_tomorrow)) {
                 $shift_info_tomorrow = calculate_shift_hours($vardiya_kod_tomorrow);
                 
                 if ($shift_info_tomorrow) {

@@ -1,6 +1,6 @@
 <?php
 /**
- * Debug tool to test shift 24 filtering and pre-show logic
+ * Debug tool to test shift 22/24 filtering and pre-show logic
  * Access via: http://yourserver/breaklist_slot/debug_shift_24.php
  */
 
@@ -31,7 +31,7 @@ function get_vardiya_kod_for_day($external_id, $dateString) {
     return null;
 }
 
-echo "<h1>Shift 24 Filter & Pre-Show Debug</h1>";
+echo "<h1>Shift 22/24 Filter & Pre-Show Debug</h1>";
 echo "<p>Current time: " . date('Y-m-d H:i:s') . "</p>";
 
 // Current time
@@ -42,23 +42,33 @@ $current_total_minutes = $current_hour * 60 + $current_minute;
 
 echo "<h2>1. Pre-Show Check</h2>";
 echo "<p>Current time: " . sprintf("%02d:%02d", $current_hour, $current_minute) . " (" . $current_total_minutes . " minutes)</p>";
-echo "<p>Pre-show threshold: 23:20 (1400 minutes)</p>";
+echo "<p>Pre-show thresholds:</p>";
+echo "<ul>";
+echo "<li>Shift 22: 21:20 (1280 minutes)</li>";
+echo "<li>Shift 24: 23:20 (1400 minutes)</li>";
+echo "</ul>";
 
-if ($current_total_minutes >= 1400) {
-    echo "<p style='color:green; font-weight:bold'>✅ PRE-SHOW ACTIVE: Current time >= 23:20</p>";
-    echo "<p>Tomorrow's shift 24 assignments SHOULD be shown</p>";
+if ($current_total_minutes >= 1280) {
+    if ($current_total_minutes >= 1400) {
+        echo "<p style='color:green; font-weight:bold'>✅ PRE-SHOW ACTIVE: Current time >= 23:20</p>";
+        echo "<p>Tomorrow's shift 22 AND 24 assignments SHOULD be shown</p>";
+    } else {
+        echo "<p style='color:green; font-weight:bold'>✅ PRE-SHOW ACTIVE: Current time >= 21:20</p>";
+        echo "<p>Tomorrow's shift 22 assignments SHOULD be shown (shift 24 at 23:20)</p>";
+    }
 } else {
-    echo "<p style='color:orange; font-weight:bold'>⏰ PRE-SHOW INACTIVE: Current time < 23:20</p>";
-    echo "<p>Need to wait until 23:20 for pre-show to activate</p>";
+    echo "<p style='color:orange; font-weight:bold'>⏰ PRE-SHOW INACTIVE: Current time < 21:20</p>";
+    echo "<p>Need to wait until 21:20 for shift 22 pre-show, or 23:20 for shift 24</p>";
+    echo "<p>Time until 21:20: " . (1280 - $current_total_minutes) . " minutes</p>";
     echo "<p>Time until 23:20: " . (1400 - $current_total_minutes) . " minutes</p>";
 }
 
 // Test regex
 echo "<h2>2. Regex Test</h2>";
 $test_codes = ['24', '24+', '22', '22+', '8', '16'];
-echo "<table border='1' cellpadding='5'><tr><th>Code</th><th>Matches /^24\\+?\$/</th><th>Will be shown in pre-show?</th></tr>";
+echo "<table border='1' cellpadding='5'><tr><th>Code</th><th>Matches /^(24|22)\\+?\$/</th><th>Will be shown in pre-show?</th></tr>";
 foreach ($test_codes as $code) {
-    $matches = preg_match('/^24\+?$/', $code);
+    $matches = preg_match('/^(24|22)\+?$/', $code);
     echo "<tr><td>$code</td><td>" . ($matches ? 'YES' : 'NO') . "</td><td>" . ($matches ? '<strong>YES</strong>' : 'NO') . "</td></tr>";
 }
 echo "</table>";
@@ -79,19 +89,23 @@ try {
     $preshow_candidates = 0;
     foreach ($employees as $emp) {
         $vardiya_kod_tomorrow = get_vardiya_kod_for_day($emp['external_id'], $tomorrow_date->format('Y-m-d'));
-        $matches = preg_match('/^24\+?$/', $vardiya_kod_tomorrow);
+        $matches = preg_match('/^(24|22)\+?$/', $vardiya_kod_tomorrow);
         
-        if ($matches || preg_match('/^24/', $vardiya_kod_tomorrow)) {
+        if ($matches || preg_match('/^(24|22)/', $vardiya_kod_tomorrow)) {
             echo "<tr>";
             echo "<td>" . htmlspecialchars($emp['name']) . "</td>";
             echo "<td>" . htmlspecialchars($emp['external_id']) . "</td>";
             echo "<td><strong>" . htmlspecialchars($vardiya_kod_tomorrow) . "</strong></td>";
             echo "<td style='background:" . ($matches ? '#ccffcc' : '#ffcccc') . "'>";
             if ($matches) {
-                echo '<strong>✅ YES (if time >= 23:20)</strong>';
+                if (preg_match('/^22\+?$/', $vardiya_kod_tomorrow)) {
+                    echo '<strong>✅ YES (if time >= 21:20)</strong>';
+                } else {
+                    echo '<strong>✅ YES (if time >= 23:20)</strong>';
+                }
                 $preshow_candidates++;
             } else {
-                echo '❌ NO (not 24 or 24+)';
+                echo '❌ NO (not 22/22+/24/24+)';
             }
             echo "</td>";
             echo "</tr>";
@@ -100,10 +114,10 @@ try {
     
     echo "</table>";
     
-    echo "<p><strong>Total employees with shift 24/24+ tomorrow: " . $preshow_candidates . "</strong></p>";
+    echo "<p><strong>Total employees with shift 22/22+/24/24+ tomorrow: " . $preshow_candidates . "</strong></p>";
     
     if ($preshow_candidates == 0) {
-        echo "<p style='color:red; font-weight:bold'>⚠️ NO EMPLOYEES have shift 24/24+ assigned to tomorrow!</p>";
+        echo "<p style='color:red; font-weight:bold'>⚠️ NO EMPLOYEES have shift 22/22+/24/24+ assigned to tomorrow!</p>";
         echo "<p>This is why pre-show doesn't show anyone. Check shift assignments in HR system.</p>";
     }
     

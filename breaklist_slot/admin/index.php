@@ -368,12 +368,13 @@ foreach ($employees as $emp) {
     $shift_info_today = calculate_shift_hours($vardiya_kod_today);
 
     // Eğer bu çalışan zaten önceki günden devam eden mesaiye eklenmediyse
-    // VE vardiya kodu "24" ile başlamıyorsa (24, 24+ gibi)
-    // Çünkü "24" bugün başlamaz, gece yarısı (yarın) başlar
+    // VE vardiya kodu "24" veya "22" ile başlamıyorsa (24, 24+, 22, 22+ gibi)
+    // Çünkü bunlar bugün başlamaz, akşam veya gece yarısı (yarın) başlar
     if (!isset($added_employee_ids[$emp['id']]) && $shift_info_today) {
-        // Filter out shifts "24" or "24+" from today's list
-        // These shifts start at 24:00 = tomorrow's 00:00, not today
-        if (preg_match('/^24\+?$/', $vardiya_kod_today)) {
+        // Filter out shifts "24", "24+", "22", "22+" from today's list
+        // Shift 24 starts at 24:00 = tomorrow's 00:00, not today
+        // Shift 22 starts at 22:00 = tonight, should be pre-shown at 21:20
+        if (preg_match('/^(24|22)\+?$/', $vardiya_kod_today)) {
             // Debug logging (enable with ?debug=1)
             if (isset($_GET['debug']) && $_GET['debug'] == '1') {
                 error_log("FILTER: " . $emp['name'] . " has shift " . $vardiya_kod_today . " - FILTERED");
@@ -414,10 +415,10 @@ foreach ($employees as $emp) {
     }
 }
 
-// ÖN GÖSTERIM: Gece yarısına yakınken yarının vardiya "24" atamalarını göster
-// Pre-show tomorrow's shift "24" assignments when close to midnight
+// ÖN GÖSTERIM: Gece yarısına/akşama yakınken yarının vardiya "24" ve "22" atamalarını göster
+// Pre-show tomorrow's shift "24" and "22" assignments when close to midnight/evening
 // IMPORTANT: Use actual current time, not view_date time, so this works even when viewing other dates
-if ($actual_current_total_minutes >= 1400) { // 23:20 = 1400 minutes (23*60 + 20)
+if ($actual_current_total_minutes >= 1280) { // 21:20 = 1280 minutes (21*60 + 20)
     // Calculate tomorrow from actual current date, not view_date
     $actual_today = new DateTime('now', new DateTimeZone('Europe/Nicosia'));
     $actual_tomorrow = (clone $actual_today)->modify('+1 day');
@@ -425,7 +426,7 @@ if ($actual_current_total_minutes >= 1400) { // 23:20 = 1400 minutes (23*60 + 20
     // Debug logging
     if (isset($_GET['debug']) && $_GET['debug'] == '1') {
         error_log("==================== PRE-SHOW START ====================");
-        error_log("PRE-SHOW: Actual current time >= 23:20 (" . sprintf("%02d:%02d", $actual_current_hour, $actual_current_minute) . ")");
+        error_log("PRE-SHOW: Actual current time >= 21:20 (" . sprintf("%02d:%02d", $actual_current_hour, $actual_current_minute) . ")");
         error_log("PRE-SHOW: Actual today = " . $actual_today->format('Y-m-d'));
         error_log("PRE-SHOW: Actual tomorrow = " . $actual_tomorrow->format('Y-m-d'));
         error_log("PRE-SHOW: View date = " . $view_date->format('Y-m-d'));
@@ -465,17 +466,25 @@ if ($actual_current_total_minutes >= 1400) { // 23:20 = 1400 minutes (23*60 + 20
             continue;
         }
         
-        // Only show shift "24" or "24+" from tomorrow
-        if (preg_match('/^24\+?$/', $vardiya_kod_tomorrow)) {
+        // Show shift "24", "24+", "22", or "22+" from tomorrow
+        if (preg_match('/^(24|22)\+?$/', $vardiya_kod_tomorrow)) {
             $shift_info_tomorrow = calculate_shift_hours($vardiya_kod_tomorrow);
             
             if ($shift_info_tomorrow) {
-                // Shift starts at 00:00 (0 minutes)
-                $start_total = 0;
-                $end_total = $shift_info_tomorrow['end_hour'] * 60 + $shift_info_tomorrow['end_minute'];
+                // Determine start time and pre-show time based on shift
+                if (preg_match('/^24\+?$/', $vardiya_kod_tomorrow)) {
+                    // Shift 24: starts at 00:00 (0 minutes)
+                    $start_total = 0;
+                    // Visible from 23:20 (40 minutes before 00:00)
+                    $start_minus = 1400; // 23:20
+                } else {
+                    // Shift 22: starts at 22:00 (1320 minutes)
+                    $start_total = 1320;
+                    // Visible from 21:20 (40 minutes before 22:00)
+                    $start_minus = 1280; // 21:20
+                }
                 
-                // Visible from 23:20 (40 minutes before 00:00)
-                $start_minus = 1400; // 23:20
+                $end_total = $shift_info_tomorrow['end_hour'] * 60 + $shift_info_tomorrow['end_minute'];
                 
                 $data = [
                     'id'=>$emp['id'],
