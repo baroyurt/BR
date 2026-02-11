@@ -52,10 +52,26 @@ function calculate_shift_hours($vardiya_kod) {
     
     $start_hour = $base_hour;
     $start_minute = 0;
+    
+    // Detect if shift starts at or after midnight (24:00+)
+    // These shifts are assigned to current day but execute on next day
+    $wraps = false;
+    if ($start_hour >= 24) {
+        $wraps = true;  // Mark as wrapping to next day
+    }
+    
+    // Normalize start_hour: hour 24 should be treated as hour 0 (midnight)
+    if ($start_hour >= 24) {
+        $start_hour = $start_hour % 24;
+    }
+    
     $end_hour = $start_hour + $duration_hours;
     $end_minute = 0;
     
+    // Gece yarısını geçen mesai kontrolü
+    // Also detect wrap if shift continues past midnight
     if ($end_hour >= 24) {
+        $wraps = true;
         $end_hour = $end_hour % 24;
     }
     
@@ -65,7 +81,8 @@ function calculate_shift_hours($vardiya_kod) {
         'end_hour' => $end_hour,
         'end_minute' => $end_minute,
         'duration' => $duration_hours,
-        'is_extended' => $is_extended
+        'is_extended' => $is_extended,
+        'wraps' => $wraps
     ];
 }
 
@@ -243,6 +260,37 @@ try {
         $minutes_in_day = 24 * 60;
 
         foreach ($hr_employees as $emp) {
+            // ÖNCE: Önceki günden taşan mesaiyi kontrol et
+            try {
+                // Önceki gün tarihi hesapla
+                $prev_date = (clone $current_time)->modify('-1 day');
+                $vardiya_kod_prev = null;
+                
+                // get_vardiya_kod_for_date fonksiyonu varsa kullan, yoksa sadece bugünkü vardiyayı kontrol et
+                if (function_exists('get_vardiya_kod_for_date')) {
+                    $vardiya_kod_prev = get_vardiya_kod_for_date($emp['external_id'], $prev_date->format('Y-m-d'));
+                }
+                
+                // Önceki gün vardiyası varsa ve gece yarısını geçiyorsa kontrol et
+                if ($vardiya_kod_prev && !in_array($vardiya_kod_prev, ['OFF', 'RT'])) {
+                    $shift_info_prev = calculate_shift_hours($vardiya_kod_prev);
+                    
+                    if ($shift_info_prev && !empty($shift_info_prev['wraps'])) {
+                        // Önceki günün mesaisi bugüne taşıyor
+                        $end_total_prev = $shift_info_prev['end_hour'] * 60 + $shift_info_prev['end_minute'];
+                        
+                        if ($end_total_prev > 0 && $current_total_minutes < $end_total_prev) {
+                            // Çalışan hala önceki günün mesaisinde
+                            $active_employee_ids[] = $emp['id'];
+                            continue; // Bugünün mesaisını kontrol etme
+                        }
+                    }
+                }
+            } catch (Exception $e) {
+                // Önceki gün kontrolü başarısız, bugünkü mesaiyi kontrol et
+            }
+            
+            // SONRA: Bugünün vardiyasını kontrol et
             try {
                 $vardiya_kod = get_today_vardiya_kod($emp['external_id']);
             } catch (Exception $e) {
@@ -251,6 +299,13 @@ try {
             
             if (!$vardiya_kod || in_array($vardiya_kod, ['OFF', 'RT'])) {
                 continue;
+            }
+            
+            // Filter out shifts "24", "24+", "22", "22+" from today's list
+            // Shift 24 starts at 24:00 = tomorrow's 00:00, not today
+            // Shift 22 starts at 22:00 = tonight, should be pre-shown at 21:20
+            if (preg_match('/^(24|22)\+?$/', $vardiya_kod)) {
+                continue; // Skip this shift for today
             }
             
             $shift_info = calculate_shift_hours($vardiya_kod);
@@ -288,6 +343,40 @@ try {
     }
 } catch (Exception $e) {
     error_log("HR bağlantı hatası (display): " . $e->getMessage());
+}
+
+// ÖN GÖSTERIM: Gece yarısına/akşama yakınken yarının vardiya "24" ve "22" atamalarını göster
+// Pre-show tomorrow's shift "24" and "22" assignments when close to midnight/evening
+if ($current_total_minutes >= 1280) { // 21:20 = 1280 minutes (21*60 + 20)
+    try {
+        // Use actual current date for tomorrow
+        $actual_today = new DateTime('now', new DateTimeZone('Europe/Nicosia'));
+        $actual_tomorrow = (clone $actual_today)->modify('+1 day');
+        
+        foreach ($all_employees as $emp) {
+            // Skip if already added
+            if (in_array($emp['id'], $active_employee_ids)) continue;
+            
+            // Get tomorrow's shift
+            try {
+                $vardiya_kod_tomorrow = get_vardiya_kod_for_date($emp['external_id'], $actual_tomorrow->format('Y-m-d'));
+            } catch (Exception $e) {
+                continue;
+            }
+            
+            // Show shift "24", "24+", "22", or "22+" from tomorrow
+            if ($vardiya_kod_tomorrow && preg_match('/^(24|22)\+?$/', $vardiya_kod_tomorrow)) {
+                $shift_info_tomorrow = calculate_shift_hours($vardiya_kod_tomorrow);
+                
+                if ($shift_info_tomorrow) {
+                    // Add to active employees (will be shown)
+                    $active_employee_ids[] = $emp['id'];
+                }
+            }
+        }
+    } catch (Exception $e) {
+        error_log("Pre-show error (display): " . $e->getMessage());
+    }
 }
 
 $active_employee_ids = array_unique($active_employee_ids);
