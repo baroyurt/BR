@@ -10,8 +10,8 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 }
 
 try {
-    $employee_id = $_POST['employee_id'] ?? null;
-    $area_id = $_POST['area_id'] ?? null;
+    $employee_id = isset($_POST['employee_id']) ? (int)$_POST['employee_id'] : null;
+    $area_id     = isset($_POST['area_id'])     ? (int)$_POST['area_id']     : null;
     $slot_time = $_POST['slot_time'] ?? 'now';
 
     if (!$employee_id || !$area_id) {

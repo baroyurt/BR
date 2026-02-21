@@ -8,7 +8,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 }
 
 try {
-    $id = $_POST['id'] ?? null;
+    $id = isset($_POST['id']) ? (int)$_POST['id'] : null;
     
     if (!$id) {
         throw new Exception('Atama ID bulunamadı!');

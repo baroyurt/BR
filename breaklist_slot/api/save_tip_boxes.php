@@ -23,7 +23,12 @@ try {
     
     foreach ($data['tips'] as $tip) {
         if (isset($tip['date']) && isset($tip['count'])) {
-            $stmt->execute([$tip['date'], $tip['count']]);
+            // Validate date format (YYYY-MM-DD)
+            $d = DateTime::createFromFormat('Y-m-d', $tip['date']);
+            if (!$d || $d->format('Y-m-d') !== $tip['date']) continue;
+            // Validate count is a non-negative integer
+            $count = max(0, (int)$tip['count']);
+            $stmt->execute([$tip['date'], $count]);
             $saved++;
         }
     }
