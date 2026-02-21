@@ -1309,6 +1309,7 @@ main { background:white; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,0.
 
           <a href="employees.php" class="btn btn-nav">👥 Çalışanlar</a>
           <a href="employee_history.php" class="btn btn-nav">📊 Vardiya Geçmişi</a>
+          <a href="analytics.php" class="btn btn-nav">📈 Analiz</a>
           <a href="../display/" target="_blank" class="btn btn-nav">📺 Takip Ekranı</a>
 
           <span id="saveStatus"></span>
