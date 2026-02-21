@@ -1,4 +1,5 @@
 <?php 
+session_start(); // Overtime ve diğer session verilerine erişim için
 require_once '../config.php';
 date_default_timezone_set('Europe/Nicosia');
 
@@ -52,10 +53,26 @@ function calculate_shift_hours($vardiya_kod) {
     
     $start_hour = $base_hour;
     $start_minute = 0;
+    
+    // Detect if shift starts at or after midnight (24:00+)
+    // These shifts are assigned to current day but execute on next day
+    $wraps = false;
+    if ($start_hour >= 24) {
+        $wraps = true;  // Mark as wrapping to next day
+    }
+    
+    // Normalize start_hour: hour 24 should be treated as hour 0 (midnight)
+    if ($start_hour >= 24) {
+        $start_hour = $start_hour % 24;
+    }
+    
     $end_hour = $start_hour + $duration_hours;
     $end_minute = 0;
     
+    // Gece yarısını geçen mesai kontrolü
+    // Also detect wrap if shift continues past midnight
     if ($end_hour >= 24) {
+        $wraps = true;
         $end_hour = $end_hour % 24;
     }
     
@@ -65,7 +82,8 @@ function calculate_shift_hours($vardiya_kod) {
         'end_hour' => $end_hour,
         'end_minute' => $end_minute,
         'duration' => $duration_hours,
-        'is_extended' => $is_extended
+        'is_extended' => $is_extended,
+        'wraps' => $wraps
     ];
 }
 
@@ -102,6 +120,38 @@ $use_hr = false;
 if (file_exists('../config_hr.php')) {
     require_once '../config_hr.php';
     $use_hr = true;
+}
+
+// wrapper: vardiya kodu çekme - mümkünse tarih parametreli fonksiyonu kullanmaya çalışır
+function get_vardiya_kod_for_day($external_id, $dateString) {
+    // dateString: 'YYYY-MM-DD'
+    if (function_exists('get_vardiya_kod_for_date')) {
+        try {
+            return get_vardiya_kod_for_date($external_id, $dateString);
+        } catch (Exception $e) {
+            // fallback
+        }
+    }
+    if (function_exists('get_today_vardiya_kod')) {
+        try {
+            $rf = new ReflectionFunction('get_today_vardiya_kod');
+            $params = $rf->getNumberOfParameters();
+            if ($params >= 2) {
+                return get_today_vardiya_kod($external_id, $dateString);
+            } elseif ($params === 1) {
+                return get_today_vardiya_kod($external_id);
+            } else {
+                return get_today_vardiya_kod();
+            }
+        } catch (ReflectionException $e) {
+            try {
+                return get_today_vardiya_kod($external_id);
+            } catch (Exception $e2) {
+                return null;
+            }
+        }
+    }
+    return null;
 }
 
 /*
@@ -196,12 +246,17 @@ function get_manual_vardiya(PDO $pdo, $employee_id) {
 
 // Helper: genel vardiya bulucu (HR veya manuel kaynaklar)
 // ÖNEMLİ: eğer $employee['manual_vardiya'] varsa onu da doğrudan dikkate alıyoruz
-function get_vardiya_for_employee(PDO $pdo, array $employee, $use_hr) {
+function get_vardiya_for_employee(PDO $pdo, array $employee, $use_hr, $date = null) {
+    // Eğer tarih verilmemişse bugünü kullan
+    if ($date === null) {
+        $date = date('Y-m-d');
+    }
+    
     // Eğer HR ve external_id varsa, önce HR kaynağını kullan
     if ($use_hr && !empty($employee['external_id'])) {
         try {
-            // get_today_vardiya_kod fonksiyonu config_hr.php içinde tanımlı olmalı
-            $kod = get_today_vardiya_kod($employee['external_id']);
+            // Wrapper fonksiyonu kullan (tarih parametresiyle)
+            $kod = get_vardiya_kod_for_day($employee['external_id'], $date);
             if ($kod) return $kod;
         } catch (Exception $e) {
             // fallback to manual
@@ -219,6 +274,14 @@ function get_vardiya_for_employee(PDO $pdo, array $employee, $use_hr) {
 
 // Aktif personel ID'lerini topla
 $active_employee_ids = [];
+// Önceki günden gelen personel ID'lerini takip et
+$prev_day_employee_ids = [];
+
+// 0. Fazla mesaiye alınan personelleri ekle (admin indexten senkronize)
+// Overtime button ile eklenen personeller her zaman görünür olmalı
+if (!empty($_SESSION['overtime_employees'])) {
+    $active_employee_ids = array_merge($active_employee_ids, $_SESSION['overtime_employees']);
+}
 
 // 1. Manuel personelleri ekle (eski davranış korunuyor)
 $manual_employees = $pdo->query("
@@ -229,28 +292,65 @@ $manual_employees = $pdo->query("
 $active_employee_ids = array_merge($active_employee_ids, $manual_employees);
 
 // 2. İK personellerini kontrol et (vardiyalarına göre)
+// Fetch all employees for later use (including tomorrow's shift check)
+$all_employees = $pdo->query("
+    SELECT id, external_id 
+    FROM employees 
+    WHERE is_active = 1 
+    AND external_id IS NOT NULL
+")->fetchAll(PDO::FETCH_ASSOC);
+
 try {
     if ($use_hr) {
-        $hr_employees = $pdo->query("
-            SELECT id, external_id 
-            FROM employees 
-            WHERE is_active = 1 
-            AND external_id IS NOT NULL
-        ")->fetchAll(PDO::FETCH_ASSOC);
-        
         // Ön gösterim süresi (dakika) - vardiya başlamadan önce personelin listede gözükmesini istediğimiz dakika
         $pre_show_minutes = 20;
         $minutes_in_day = 24 * 60;
 
-        foreach ($hr_employees as $emp) {
+        foreach ($all_employees as $emp) {
+            // ÖNCE: Önceki günden taşan mesaiyi kontrol et
             try {
-                $vardiya_kod = get_today_vardiya_kod($emp['external_id']);
+                // Önceki gün tarihi hesapla
+                $prev_date = (clone $current_time)->modify('-1 day');
+                
+                // Wrapper fonksiyonu kullan (tarih parametresiyle)
+                $vardiya_kod_prev = get_vardiya_kod_for_day($emp['external_id'], $prev_date->format('Y-m-d'));
+                
+                // Önceki gün vardiyası varsa ve gece yarısını geçiyorsa kontrol et
+                if ($vardiya_kod_prev && !in_array($vardiya_kod_prev, ['OFF', 'RT'])) {
+                    $shift_info_prev = calculate_shift_hours($vardiya_kod_prev);
+                    
+                    if ($shift_info_prev && !empty($shift_info_prev['wraps'])) {
+                        // Önceki günün mesaisi bugüne taşıyor
+                        $end_total_prev = $shift_info_prev['end_hour'] * 60 + $shift_info_prev['end_minute'];
+                        
+                        if ($end_total_prev > 0 && $current_total_minutes < $end_total_prev) {
+                            // Çalışan hala önceki günün mesaisinde
+                            $active_employee_ids[] = $emp['id'];
+                            $prev_day_employee_ids[] = $emp['id']; // Önceki günden geldiğini işaretle
+                            continue; // Bugünün mesaisını kontrol etme
+                        }
+                    }
+                }
+            } catch (Exception $e) {
+                // Önceki gün kontrolü başarısız, bugünkü mesaiyi kontrol et
+            }
+            
+            // SONRA: Bugünün vardiyasını kontrol et
+            try {
+                // Wrapper fonksiyonu kullan (bugünün tarihiyle)
+                $vardiya_kod = get_vardiya_kod_for_day($emp['external_id'], $current_time->format('Y-m-d'));
             } catch (Exception $e) {
                 $vardiya_kod = null;
             }
             
             if (!$vardiya_kod || in_array($vardiya_kod, ['OFF', 'RT'])) {
                 continue;
+            }
+            
+            // Filter out shifts "24" or "24+" from today's list
+            // These shifts start at 24:00 = tomorrow's 00:00, not today
+            if (preg_match('/^24\+?$/', $vardiya_kod)) {
+                continue; // Skip this shift for today
             }
             
             $shift_info = calculate_shift_hours($vardiya_kod);
@@ -290,6 +390,77 @@ try {
     error_log("HR bağlantı hatası (display): " . $e->getMessage());
 }
 
+// ÖN GÖSTERIM: 23:20'den sonra vardiya "24" atamalarını bugünün personelleri olarak göster
+// Pre-show shift "24" assignments as today's personnel after 23:20
+// NOTE: In this HR system, shift 24 (starting at 00:00) is assigned to the WORKING DAY, not the calendar start day
+//       At 23:20 on Feb 11, shift 24 starting at midnight is assigned to Feb 11 in the HR database
+//       This is the "working day" convention where the night shift belongs to the day worked
+if ($current_total_minutes >= 1400) { // 23:20 = 1400 minutes (23*60 + 20)
+    try {
+        // Get actual current date
+        $actual_today = new DateTime('now', new DateTimeZone('Europe/Nicosia'));
+        
+        foreach ($all_employees as $emp) {
+            // Skip if already added
+            if (in_array($emp['id'], $active_employee_ids)) continue;
+            
+            // Get shift 24 from today's date in HR (working day convention)
+            // Shift 24 at midnight is assigned to the working day, not the next calendar day
+            try {
+                $vardiya_kod = get_vardiya_kod_for_day($emp['external_id'], $actual_today->format('Y-m-d'));
+            } catch (Exception $e) {
+                continue;
+            }
+            
+            // Only show shift "24" or "24+" (starts at midnight)
+            if ($vardiya_kod && preg_match('/^24\+?$/', $vardiya_kod)) {
+                $shift_info = calculate_shift_hours($vardiya_kod);
+                
+                if ($shift_info) {
+                    // Add to active employees (will be shown)
+                    $active_employee_ids[] = $emp['id'];
+                }
+            }
+        }
+    } catch (Exception $e) {
+        error_log("Pre-show error (display): " . $e->getMessage());
+    }
+}
+
+// 3. YENI: Aktif atamaları olan personelleri de ekle
+// Admin'den yapılan atamaların display'de görünmesi için
+// Mevcut ve gelecek 3 slot (toplam 4 slot) için atamaları kontrol et
+$slot_duration = 20 * 60; // 20 dakika
+$now = time();
+$current_slot_start = floor($now / $slot_duration) * $slot_duration;
+
+try {
+    // Görünür zaman aralığındaki tüm atamaları çek (mevcut + 3 gelecek slot)
+    $visible_slots = [];
+    for ($i = 0; $i < 4; $i++) {
+        $visible_slots[] = $current_slot_start + ($i * $slot_duration);
+    }
+    
+    if (!empty($visible_slots)) {
+        // Create placeholders for prepared statement: FROM_UNIXTIME(?), FROM_UNIXTIME(?), ...
+        $placeholders = implode(',', array_fill(0, count($visible_slots), 'FROM_UNIXTIME(?)'));
+        $stmt = $pdo->prepare("
+            SELECT DISTINCT ws.employee_id
+            FROM work_slots ws
+            JOIN employees e ON ws.employee_id = e.id
+            WHERE ws.slot_start IN ($placeholders)
+            AND e.is_active = 1
+        ");
+        $stmt->execute($visible_slots);
+        $assigned_employee_ids = $stmt->fetchAll(PDO::FETCH_COLUMN);
+        
+        // Bu atamalı personelleri listeye ekle
+        $active_employee_ids = array_merge($active_employee_ids, $assigned_employee_ids);
+    }
+} catch (Exception $e) {
+    error_log("Assigned employees query error (display): " . $e->getMessage());
+}
+
 $active_employee_ids = array_unique($active_employee_ids);
 sort($active_employee_ids);
 
@@ -297,14 +468,45 @@ if (!empty($active_employee_ids)) {
     $placeholders = implode(',', array_fill(0, count($active_employee_ids), '?'));
     // Burada manual_vardiya sütununu da SELECT'e ekliyoruz ki manuel eklenen vardiya doğrudan gelsin
     $stmt = $pdo->prepare("
-        SELECT id, name, external_id, COALESCE(manual_vardiya, '') AS manual_vardiya
+        SELECT id, name, external_id, COALESCE(manual_vardiya, '') AS manual_vardiya, birim
         FROM employees 
         WHERE is_active = 1 
         AND id IN ($placeholders)
-        ORDER BY name
     ");
     $stmt->execute($active_employee_ids);
     $employees = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    
+    // Sort employees by custom birim order
+    if (!empty($employees)) {
+        // Birim priority function for custom sorting order
+        $birim_priority = function($birim) {
+            $map = [
+                'attendant-1' => 1,
+                'attendant-2' => 2,
+                'attendant-3' => 3,
+                'training attendant' => 4,
+                'card desk' => 5,
+                'card desk-1' => 6,
+                'card desk-2' => 7,
+            ];
+            
+            $b = strtolower(trim((string)$birim));
+            // Normalize separators
+            $b = str_replace(['_', '–', '—', '/', '\\'], '-', $b);
+            $b = preg_replace('/\s+/', ' ', $b);
+            
+            return $map[$b] ?? 999; // Unknown units go to the end
+        };
+        
+        usort($employees, function($a, $b) use ($birim_priority) {
+            $pa = $birim_priority($a['birim'] ?? '');
+            $pb = $birim_priority($b['birim'] ?? '');
+            if ($pa !== $pb) return $pa - $pb;
+            
+            // If same birim priority, sort by name
+            return strcmp($a['name'] ?? '', $b['name'] ?? '');
+        });
+    }
 } else {
     $employees = [];
 }
@@ -426,7 +628,7 @@ $today_str = $today_dt->format('Y-m-d');
         .container {
             max-width: 3840px;
             margin: 0 auto;
-            padding: 4px 10px;
+            padding: 190px 10px 4px 10px; /* Added 190px top padding (~5cm) */
             height: calc(100vh - 10vh); /* footer yüksekliğini çıkardık, içeriğin görünmesini garanti eder */
             display: flex;
             flex-direction: column;
@@ -873,8 +1075,36 @@ $today_str = $today_dt->format('Y-m-d');
                         </div>
                         
                         <?php
-                        // çalışan için vardiya kodunu al (önce HR, sonra employees.manual_vardiya, sonra diğer manuel kaynaklar)
-                        $vardiya_kod_display = get_vardiya_for_employee($pdo, $employee, $use_hr);
+                        // çalışan için vardiya kodunu al
+                        // Eğer önceki günden geliyorsa, önceki günün vardiya kodunu göster
+                        if (in_array($employee['id'], $prev_day_employee_ids)) {
+                            // Önceki gün tarihi hesapla
+                            $prev_date = (clone $current_time)->modify('-1 day');
+                            // Önceki günün vardiya kodunu al
+                            $vardiya_kod_display = null;
+                            if ($use_hr && !empty($employee['external_id'])) {
+                                try {
+                                    $vardiya_kod_display = get_vardiya_kod_for_day($employee['external_id'], $prev_date->format('Y-m-d'));
+                                } catch (Exception $e) {
+                                    // Hata durumunda null
+                                }
+                            }
+                            // Manuel vardiya kontrolü
+                            if (!$vardiya_kod_display && isset($employee['manual_vardiya']) && trim((string)$employee['manual_vardiya']) !== '') {
+                                $vardiya_kod_display = trim((string)$employee['manual_vardiya']);
+                            }
+                            // Eğer hala yoksa, genel arama yap
+                            if (!$vardiya_kod_display) {
+                                $vardiya_kod_display = get_manual_vardiya($pdo, $employee['id']);
+                            }
+                            // "<" ekle (önceki günden geldiğini gösterir)
+                            if ($vardiya_kod_display) {
+                                $vardiya_kod_display .= ' <';
+                            }
+                        } else {
+                            // Normal durumda bugünün vardiya kodunu al
+                            $vardiya_kod_display = get_vardiya_for_employee($pdo, $employee, $use_hr);
+                        }
                         $shift_class = $vardiya_kod_display ? '' : 'empty';
                         ?>
                         <div class="shift-code <?= $shift_class ?>"><?= $vardiya_kod_display ? htmlspecialchars($vardiya_kod_display, ENT_QUOTES, 'UTF-8') : '-' ?></div>

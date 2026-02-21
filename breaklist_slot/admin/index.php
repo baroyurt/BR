@@ -1,27 +1,76 @@
 <?php
+
+ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
+error_reporting(E_ALL);
+
+
 require_once '../config.php';
 require_once '../config_hr.php';
 session_start();
 
-// ---------------------------
-// MANUEL GÜN GEÇİŞİ (day_offset)
-// - Sayfayı ?day_offset=N ile çağırarak N gün ileri/geri bakabilirsiniz.
-// - GET parametresi varsa session güncellenir; aksi halde session'daki değer kullanılır.
-// ---------------------------
 if (isset($_GET['day_offset'])) {
     $_SESSION['day_offset'] = (int)$_GET['day_offset'];
 }
 if (!isset($_SESSION['day_offset'])) $_SESSION['day_offset'] = 0;
 $day_offset = (int)$_SESSION['day_offset'];
 
-// wrapper: vardiya kodu çekme - mümkünse tarih parametreli fonksiyonu kullanmaya çalışır
+function get_overtime_employees_from_db() {
+    global $pdo;
+    try {
+        $stmt = $pdo->query("SELECT employee_id FROM overtime_employees");
+        return $stmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
+    } catch (Exception $e) {
+        return [];
+    }
+}
+
+$overtime_from_db = get_overtime_employees_from_db();
+
+if (!isset($_SESSION['overtime_employees'])) {
+    $_SESSION['overtime_employees'] = [];
+}
+
+$all_overtime_employees = array_unique(array_merge(
+    $_SESSION['overtime_employees'],
+    $overtime_from_db
+));
+
+if (isset($_POST['action']) && $_POST['action'] === 'toggle_overtime' && isset($_POST['employee_id'])) {
+    $employee_id = (int)$_POST['employee_id'];
+    
+    $check_stmt = $pdo->prepare("SELECT id FROM overtime_employees WHERE employee_id = ?");
+    $check_stmt->execute([$employee_id]);
+    $exists_in_db = $check_stmt->fetch();
+    
+    $exists_in_session = in_array($employee_id, $_SESSION['overtime_employees']);
+    
+    if ($exists_in_db || $exists_in_session) {
+        $delete_stmt = $pdo->prepare("DELETE FROM overtime_employees WHERE employee_id = ?");
+        $delete_stmt->execute([$employee_id]);
+        
+        $_SESSION['overtime_employees'] = array_filter($_SESSION['overtime_employees'], function($id) use ($employee_id) {
+            return $id !== $employee_id;
+        });
+        $_SESSION['overtime_employees'] = array_values($_SESSION['overtime_employees']);
+        
+        echo json_encode(['success' => true, 'overtime' => false, 'employee_id' => $employee_id]);
+    } else {
+        $insert_stmt = $pdo->prepare("INSERT INTO overtime_employees (employee_id) VALUES (?)");
+        $insert_stmt->execute([$employee_id]);
+        
+        $_SESSION['overtime_employees'][] = $employee_id;
+        
+        echo json_encode(['success' => true, 'overtime' => true, 'employee_id' => $employee_id]);
+    }
+    exit;
+}
+
 function get_vardiya_kod_for_day($external_id, $dateString) {
-    // dateString: 'YYYY-MM-DD'
     if (function_exists('get_vardiya_kod_for_date')) {
         try {
             return get_vardiya_kod_for_date($external_id, $dateString);
         } catch (Exception $e) {
-            // fallback
         }
     }
     if (function_exists('get_today_vardiya_kod')) {
@@ -46,62 +95,10 @@ function get_vardiya_kod_for_day($external_id, $dateString) {
     return null;
 }
 
-// --- BEGIN: background sync of automatic employees (silent, non-blocking) ---
-// Calls your internal sync_employees.php in background so index.php doesn't block or show output.
-function background_request_fire_and_forget($url) {
-    $parts = parse_url($url);
-    if (!$parts || !isset($parts['host'])) return false;
-
-    $scheme = isset($parts['scheme']) ? $parts['scheme'] : 'http';
-    $host = $parts['host'];
-    $port = isset($parts['port']) ? $parts['port'] : ($scheme === 'https' ? 443 : 80);
-    $path = (isset($parts['path']) ? $parts['path'] : '/') . (isset($parts['query']) ? '?' . $parts['query'] : '');
-
-    $errno = 0; $errstr = '';
-    $transport = ($scheme === 'https') ? 'ssl' : 'tcp';
-    // short timeout to avoid hanging
-    $fp = @fsockopen($transport . '://' . $host, $port, $errno, $errstr, 1);
-    if ($fp) {
-        stream_set_blocking($fp, 0); // non-blocking
-        $out  = "GET " . $path . " HTTP/1.1\r\n";
-        $out .= "Host: " . $host . "\r\n";
-        $out .= "User-Agent: BackgroundSync/1.0\r\n";
-        $out .= "Connection: Close\r\n\r\n";
-        fwrite($fp, $out);
-        // give the server a tiny moment to accept, then close
-        usleep(50000); // 50ms
-        fclose($fp);
-        return true;
-    }
-
-    // fallback to curl with strict timeouts
-    if (function_exists('curl_init')) {
-        $ch = curl_init($url);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_TIMEOUT_MS, 800); // 0.8s max
-        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT_MS, 400);
-        curl_exec($ch);
-        curl_close($ch);
-        return true;
-    }
-
-    return false;
-}
-
-// NOTE: Background sync disabled by request — the following call was commented out.
-// If you want to re-enable it, uncomment the line below and ensure the URL is correct.
-// @background_request_fire_and_forget('http://172.18.0.36/breaklist_slot/sync_employees.php');
-// --- END background sync ---
-
-// -------------------------
-// HR photo helper + AJAX endpoint (integrated from show_hr_query_result.php)
-// -------------------------
 function get_personel_photo($personel_id) {
     $conn = get_hr_connection();
     $photo = null;
 
-    // Tam veritabanı yolları ile cross-database join
-    // NOT: PersonelID GUID olduğu için = ? kullanıyoruz
     $sql = "SELECT TOP 1 
                 b.Icerik,
                 p.Adi,
@@ -143,12 +140,9 @@ function get_personel_photo($personel_id) {
     return $photo;
 }
 
-// AJAX isteği için fotoğraf getirme - aynı dosyaya POST yapıldığında çalışacak
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['get_photo'])) {
-    // GUID olduğu için intval YOK! String olarak al
     $personelID = trim($_POST['get_photo']);
 
-    // GUID formatını kontrol et
     if (!preg_match('/^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i', $personelID)) {
         header('Content-Type: application/json; charset=utf-8');
         echo json_encode([
@@ -172,7 +166,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['get_photo'])) {
             'soyadi' => $photo['soyadi']
         ]);
     } else {
-        // Alternatif olarak sadece personel bilgilerini getir
         $conn = get_hr_connection();
         $sql_info = "SELECT p.Adi, p.Soyadi, bolum.Tanim AS BolumTanimi, birim.Tanim AS BirimTanimi
                     FROM [IK_Chamada].[dbo].[Personel] p
@@ -199,25 +192,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['get_photo'])) {
 
 date_default_timezone_set('Europe/Nicosia');
 
-// ---------------------------
-// current / view time adjustments (day_offset kullanılıyor)
-// ---------------------------
 $now_real = new DateTime('now', new DateTimeZone('Europe/Nicosia'));
 
-// $day_offset session üzerinden alındı daha üstte; create view_date
 $view_date = clone $now_real;
 if ($day_offset !== 0) {
     if ($day_offset > 0) $view_date->modify('+' . $day_offset . ' days');
-    else $view_date->modify($day_offset . ' days'); // negative handled
+    else $view_date->modify($day_offset . ' days');
 }
 
-// current_time used in template is based on view_date but keeps current time-of-day
 $current_time = clone $view_date;
 $current_hour = (int)$current_time->format('H');
 $current_minute = (int)$current_time->format('i');
 $current_total_minutes = $current_hour * 60 + $current_minute;
 
-// NOTU ÇEK
+$actual_now = new DateTime('now', new DateTimeZone('Europe/Nicosia'));
+$actual_current_hour = (int)$actual_now->format('H');
+$actual_current_minute = (int)$actual_now->format('i');
+$actual_current_total_minutes = $actual_current_hour * 60 + $actual_current_minute;
+
 $display_note = '';
 try {
     $note_stmt = $pdo->query("SELECT note_text FROM display_notes ORDER BY updated_at DESC LIMIT 1");
@@ -227,25 +219,52 @@ try {
     $display_note = '';
 }
 
-// helper: circular range check (handles intervals that wrap past midnight)
 function in_circular_range($cur, $from, $to) {
-    // cur, from, to are minutes since midnight (0..1439)
-    if ($from === $to) return false; // empty interval
+    if ($from === $to) return false;
     if ($from < $to) {
         return ($cur >= $from && $cur < $to);
     } else {
-        // wraps midnight
         return ($cur >= $from || $cur < $to);
     }
 }
 
-// NEW helper: görünürlük başlangıcını doğru güne sabitle
 function get_visible_start_minute($start_total) {
-    // 40 dk önce göster, ama 00:00'dan önceye taşırma
     return max(0, $start_total - 40);
 }
 
-// VARDİYA HESAPLAMA
+function get_shift_time_display($vardiya_kod) {
+    if (!$vardiya_kod) return '';
+    
+    $clean_kod = trim(str_replace(' <', '', $vardiya_kod));
+    
+    $shift_times = [
+        '08'  => '08:00 - 16:00',
+        '08+' => '08:00 - 18:00',
+        '10'  => '10:00 - 18:00',
+        '10+' => '10:00 - 20:00',
+        '12'  => '12:00 - 20:00',
+        '12+' => '12:00 - 22:00',
+        '14'  => '14:00 - 22:00',
+        '14+' => '14:00 - 00:00',
+        '16'  => '16:00 - 00:00',
+        '16+' => '16:00 - 02:00',
+        '18'  => '18:00 - 02:00',
+        '18+' => '18:00 - 04:00',
+        '20'  => '20:00 - 04:00',
+        '20+' => '20:00 - 06:00',
+        '22'  => '22:00 - 06:00',
+        '22+' => '22:00 - 08:00',
+        '24'  => '00:00 - 08:00',
+        '24+' => '00:00 - 10:00',
+    ];
+    
+    if (isset($shift_times[$clean_kod])) {
+        return $shift_times[$clean_kod];
+    }
+    
+    return '';
+}
+
 function calculate_shift_hours($vardiya_kod) {
     if (!$vardiya_kod || in_array($vardiya_kod, ['OFF', 'RT'])) return null;
     
@@ -270,10 +289,19 @@ function calculate_shift_hours($vardiya_kod) {
     
     $start_hour = $base_hour;
     $start_minute = 0;
+    
+    $wraps = false;
+    if ($start_hour >= 24) {
+        $wraps = true;
+    }
+    
+    if ($start_hour >= 24) {
+        $start_hour = $start_hour % 24;
+    }
+    
     $end_hour = $start_hour + $duration_hours;
     $end_minute = 0;
-    // detect wrap (shift continues into next day)
-    $wraps = false;
+    
     if ($end_hour >= 24) {
         $wraps = true;
         $end_hour = $end_hour % 24;
@@ -282,30 +310,168 @@ function calculate_shift_hours($vardiya_kod) {
     return ['start_hour'=>$start_hour,'start_minute'=>$start_minute,'end_hour'=>$end_hour,'end_minute'=>$end_minute,'duration'=>$duration_hours,'is_extended'=>$is_extended,'wraps'=>$wraps];
 }
 
-// PERSONEL ÇEKME
-// -> buraya 'birim' ve 'external_id' sütunu eklendi, böylece UI'da isim altına gösterilebilsin
 $employees = $pdo->query("SELECT id, name, external_id, birim FROM employees WHERE is_active = 1 AND external_id IS NOT NULL ORDER BY name")->fetchAll(PDO::FETCH_ASSOC);
 $working_now = $not_started_yet = $finished = [];
 
-// Track which employee IDs have been added for the view_date (so we avoid duplicates)
 $added_employee_ids = [];
 
 foreach ($employees as $emp) {
-    // use wrapper to attempt to fetch vardiya kod for the selected view_date
+    $prev_date = (clone $view_date)->modify('-1 day');
+    $vardiya_kod_prev = get_vardiya_kod_for_day($emp['external_id'], $prev_date->format('Y-m-d'));
+    
+    $debug_shift20 = (isset($_GET['debug']) && ($_GET['debug'] == '1' || $_GET['debug'] == 'shift20'));
+    if ($debug_shift20 && $vardiya_kod_prev) {
+        error_log(sprintf(
+            "[shift20] Employee: %s\n  Current viewing: %s\n  Previous day: %s\n  Prev shift: %s%s",
+            $emp['name'],
+            $view_date->format('Y-m-d H:i'),
+            $prev_date->format('Y-m-d'),
+            $vardiya_kod_prev,
+            in_array($vardiya_kod_prev, ['OFF', 'RT']) ? " (OFF/RT - will be filtered)" : ""
+        ));
+    }
+
+    if ($vardiya_kod_prev && !in_array($vardiya_kod_prev, ['OFF', 'RT'])) {
+        $shift_info_prev = calculate_shift_hours($vardiya_kod_prev);
+        
+        if ($debug_shift20 && $shift_info_prev) {
+            error_log(sprintf(
+                "  Shift info: wraps=%s (ends at %02d:%02d)",
+                !empty($shift_info_prev['wraps']) ? 'YES' : 'NO',
+                $shift_info_prev['end_hour'],
+                $shift_info_prev['end_minute']
+            ));
+        }
+        
+        if (isset($_GET['debug']) && $_GET['debug'] == '1' && preg_match('/^24\+?$/', $vardiya_kod_prev)) {
+            error_log("========== SHIFT 24 DEBUG ==========");
+            error_log("Employee: " . $emp['name']);
+            error_log("Prev date: " . $prev_date->format('Y-m-d'));
+            error_log("Prev shift: " . $vardiya_kod_prev);
+            error_log("Shift info: " . print_r($shift_info_prev, true));
+            error_log("Current time: " . sprintf("%02d:%02d", $current_hour, $current_minute) . " (" . $current_total_minutes . " min)");
+        }
+        
+        if ($shift_info_prev && !empty($shift_info_prev['wraps'])) {
+            $end_total_prev = $shift_info_prev['end_hour'] * 60 + $shift_info_prev['end_minute'];
+            if ($end_total_prev > 0) {
+                $start_total = 0;
+                $end_total = $end_total_prev;
+
+                $start_minus = 0;
+                $is_visible_and_working = in_circular_range($current_total_minutes, $start_minus, $end_total);
+
+                if (isset($_GET['debug']) && $_GET['debug'] == '1' && preg_match('/^24\+?$/', $vardiya_kod_prev)) {
+                    error_log("End total: " . $end_total_prev);
+                    error_log("Is visible and working: " . ($is_visible_and_working ? 'YES' : 'NO'));
+                    error_log("in_circular_range(" . $current_total_minutes . ", " . $start_minus . ", " . $end_total . ")");
+                }
+
+                if ($is_visible_and_working) {
+                    if ($debug_shift20) {
+                        error_log(sprintf(
+                            "  Currently in shift: YES (current_time=%02d:%02d < shift_end=%02d:%02d)\n  → ADDED to working_now with marker: %s <",
+                            $current_hour,
+                            $current_minute,
+                            $shift_info_prev['end_hour'],
+                            $shift_info_prev['end_minute'],
+                            $vardiya_kod_prev
+                        ));
+                    }
+                    
+                    $shift_info_for_today = [
+                        'start_hour' => 0,
+                        'start_minute' => 0,
+                        'end_hour' => $shift_info_prev['end_hour'],
+                        'end_minute' => $shift_info_prev['end_minute'],
+                        'duration' => ($end_total - $start_total) / 60,
+                        'is_extended' => $shift_info_prev['is_extended'],
+                        'wraps' => false
+                    ];
+
+                    $data = [
+                        'id'=>$emp['id'],
+                        'name'=>$emp['name'],
+                        'birim'=> $emp['birim'] ?? '',
+                        'vardiya_kod'=> $vardiya_kod_prev . ' <',
+                        'shift_info'=>$shift_info_for_today,
+                        'visible_from_minus20'=>$start_minus,
+                        'external_id' => $emp['external_id'],
+                        'from_prev_day' => true
+                    ];
+
+                    $working_now[] = $data;
+                    $added_employee_ids[$emp['id']] = true;
+                    continue;
+                }
+                elseif ($current_total_minutes < $end_total) {
+                    if ($debug_shift20) {
+                        error_log(sprintf(
+                            "  Currently in shift: NO (shift ended, current=%02d:%02d >= end=%02d:%02d)\n  → SKIPPED (will check today's shift)",
+                            $current_hour,
+                            $current_minute,
+                            $shift_info_prev['end_hour'],
+                            $shift_info_prev['end_minute']
+                        ));
+                    }
+                }
+                else {
+                    if ($debug_shift20) {
+                        error_log(sprintf(
+                            "  Currently in shift: NO\n  → SKIPPED (will check today's shift)"
+                        ));
+                    }
+                }
+            }
+        }
+        else if ($debug_shift20 && $vardiya_kod_prev && !in_array($vardiya_kod_prev, ['OFF', 'RT'])) {
+            error_log("  Shift doesn't wrap or no shift info\n  → SKIPPED");
+        }
+    }
+    else if ($debug_shift20 && $vardiya_kod_prev) {
+        error_log("  Filtered: YES (OFF/RT shifts don't carry over)\n  → SKIPPED previous day check");
+    }
+
     $vardiya_kod_today = get_vardiya_kod_for_day($emp['external_id'], $view_date->format('Y-m-d'));
     $shift_info_today = calculate_shift_hours($vardiya_kod_today);
+    
+    if (isset($_GET['debug']) && $_GET['debug'] == '1') {
+        if (preg_match('/^(22|23)\+?$/', $vardiya_kod_today ?? '')) {
+            error_log("DEBUG CURR DAY: " . $emp['name'] . " curr_date=" . $view_date->format('Y-m-d') . 
+                     " curr_shift=" . ($vardiya_kod_today ?? 'NULL') . 
+                     " already_added=" . (isset($added_employee_ids[$emp['id']]) ? 'YES' : 'NO') .
+                     " has_shift_info=" . ($shift_info_today ? 'YES' : 'NO'));
+        }
+    }
 
-    // Primary: if today has a shift and it is not OFF/RT -> show per normal logic
-    if ($shift_info_today) {
-        // compute start/end in minutes since midnight
+    if (!isset($added_employee_ids[$emp['id']]) && $shift_info_today) {
+        if (preg_match('/^24\+?$/', $vardiya_kod_today)) {
+            if (isset($_GET['debug']) && $_GET['debug'] == '1') {
+                error_log("FILTER: " . $emp['name'] . " has shift " . $vardiya_kod_today . " - SKIPPED (pre-show will handle)");
+            }
+            continue;
+        }
+        
+        if (isset($_GET['debug']) && $_GET['debug'] == '1' && preg_match('/^24/', $vardiya_kod_today)) {
+            error_log("PASS: " . $emp['name'] . " has shift " . $vardiya_kod_today . " - NOT FILTERED (shouldn't happen!)");
+        }
+        
         $start_total = $shift_info_today['start_hour'] * 60 + $shift_info_today['start_minute'];
         $end_total = $shift_info_today['end_hour'] * 60 + $shift_info_today['end_minute'];
 
-        // NEW: görünürlük başlangıcı (00:00'dan önceye taşmaz)
         $start_minus = get_visible_start_minute($start_total);
 
-        // determine if current time falls into the visible/active window
-        $is_visible_and_working = in_circular_range($current_total_minutes, $start_minus, $end_total);
+        $has_overtime = in_array($emp['id'], $all_overtime_employees);
+        
+        if ($has_overtime) {
+            $is_visible_and_working = true;
+        } else {
+            if (!empty($shift_info_today['wraps']) && $current_total_minutes < $start_total) {
+                $is_visible_and_working = false;
+            } else {
+                $is_visible_and_working = in_circular_range($current_total_minutes, $start_minus, $end_total);
+            }
+        }
 
         $data = [
             'id'=>$emp['id'],
@@ -316,62 +482,135 @@ foreach ($employees as $emp) {
             'visible_from_minus20'=>$start_minus,
             'external_id' => $emp['external_id']
         ];
-        if ($is_visible_and_working) $working_now[] = $data;
-        elseif ($current_total_minutes < $start_total) $not_started_yet[] = $data;
-        else $finished[] = $data;
+        
+        if (isset($_GET['debug']) && $_GET['debug'] == '1') {
+            if (preg_match('/^(22|23)\+?$/', $vardiya_kod_today)) {
+                $list_name = $is_visible_and_working ? 'working_now' : 
+                            ($current_total_minutes < $start_total ? 'not_started_yet' : 'finished');
+                error_log("DEBUG PLACEMENT: " . $emp['name'] . " shift=" . $vardiya_kod_today . 
+                         " current_time=" . sprintf("%02d:%02d", $current_hour, $current_minute) .
+                         " overtime=" . ($has_overtime ? 'YES' : 'NO') .
+                         " → " . $list_name);
+            }
+        }
+        
+        if ($is_visible_and_working) {
+            $working_now[] = $data;
+        } elseif ($current_total_minutes < $start_total) {
+            $not_started_yet[] = $data;
+        } else {
+            $finished[] = $data;
+        }
 
         $added_employee_ids[$emp['id']] = true;
-        continue; // bugünün vardiyası varsa burada bitir
-    }
-
-    // SECONDARY: check previous day's shift for overflow into current view_date
-    $prev_date = (clone $view_date)->modify('-1 day');
-    $vardiya_kod_prev = get_vardiya_kod_for_day($emp['external_id'], $prev_date->format('Y-m-d'));
-    $shift_info_prev = calculate_shift_hours($vardiya_kod_prev);
-
-    if ($shift_info_prev && !empty($shift_info_prev['wraps'])) {
-        $end_total_prev = $shift_info_prev['end_hour'] * 60 + $shift_info_prev['end_minute'];
-        if ($end_total_prev > 0) {
-            $start_total = 0;
-            $end_total = $end_total_prev;
-
-            // 00:00 başlangıcında geriye taşma yok
-            $start_minus = 0;
-            $is_visible_and_working = in_circular_range($current_total_minutes, $start_minus, $end_total);
-
-            $shift_info_for_today = [
-                'start_hour' => 0,
-                'start_minute' => 0,
-                'end_hour' => $shift_info_prev['end_hour'],
-                'end_minute' => $shift_info_prev['end_minute'],
-                'duration' => ($end_total - $start_total) / 60,
-                'is_extended' => $shift_info_prev['is_extended'],
-                'wraps' => false
-            ];
-
-            $data = [
-                'id'=>$emp['id'],
-                'name'=>$emp['name'],
-                'birim'=> $emp['birim'] ?? '',
-                'vardiya_kod'=> $vardiya_kod_prev . ' (prev-day overflow)',
-                'shift_info'=>$shift_info_for_today,
-                'visible_from_minus20'=>$start_minus,
-                'external_id' => $emp['external_id'],
-                'from_prev_day' => true
-            ];
-
-            if ($is_visible_and_working) $working_now[] = $data;
-            elseif ($current_total_minutes < $start_total) $not_started_yet[] = $data;
-            else $finished[] = $data;
-
-            $added_employee_ids[$emp['id']] = true;
-        }
     }
 }
 
-// SIRALAMA
+if ($actual_current_total_minutes >= 1400) {
+    $actual_today = new DateTime('now', new DateTimeZone('Europe/Nicosia'));
+    
+    if (isset($_GET['debug']) && $_GET['debug'] == '1') {
+        error_log("==================== PRE-SHOW START ====================");
+        error_log("PRE-SHOW: Actual current time >= 23:20 (" . sprintf("%02d:%02d", $actual_current_hour, $actual_current_minute) . ")");
+        error_log("PRE-SHOW: Actual today = " . $actual_today->format('Y-m-d'));
+        error_log("PRE-SHOW: View date = " . $view_date->format('Y-m-d'));
+        error_log("PRE-SHOW: Querying today's date for shift 24 (working day convention)");
+        error_log("PRE-SHOW: Total employees to check = " . count($employees));
+        error_log("PRE-SHOW: Already added employees = " . count($added_employee_ids));
+    }
+        
+    $preshow_count = 0;
+    $preshow_skipped = 0;
+    $preshow_no_shift = 0;
+    $preshow_wrong_shift = 0;
+    
+    foreach ($employees as $emp) {
+        if (isset($added_employee_ids[$emp['id']])) {
+            $preshow_skipped++;
+            if (isset($_GET['debug']) && $_GET['debug'] == '1') {
+                error_log("PRE-SHOW: Skipping " . $emp['name'] . " (already added)");
+            }
+            continue;
+        }
+        
+        $vardiya_kod = get_vardiya_kod_for_day($emp['external_id'], $actual_today->format('Y-m-d'));
+        
+        if (isset($_GET['debug']) && $_GET['debug'] == '1') {
+            if ($vardiya_kod) {
+                error_log("PRE-SHOW: " . $emp['name'] . " has shift on " . $actual_today->format('Y-m-d') . ": " . $vardiya_kod);
+            } else {
+                error_log("PRE-SHOW: " . $emp['name'] . " has NO shift on " . $actual_today->format('Y-m-d'));
+            }
+        }
+        
+        if (!$vardiya_kod) {
+            $preshow_no_shift++;
+            continue;
+        }
+        
+        if (preg_match('/^24\+?$/', $vardiya_kod)) {
+            $shift_info = calculate_shift_hours($vardiya_kod);
+            
+            if ($shift_info) {
+                $start_total = 0;
+                $end_total = $shift_info['end_hour'] * 60 + $shift_info['end_minute'];
+                
+                $start_minus = 1400;
+                
+                $data = [
+                    'id'=>$emp['id'],
+                    'name'=>$emp['name'],
+                    'birim'=> $emp['birim'] ?? '',
+                    'vardiya_kod'=>$vardiya_kod,
+                    'shift_info'=>$shift_info,
+                    'visible_from_minus20'=>$start_minus,
+                    'external_id' => $emp['external_id']
+                ];
+                
+                $working_now[] = $data;
+                $added_employee_ids[$emp['id']] = true;
+                $preshow_count++;
+                
+                if (isset($_GET['debug']) && $_GET['debug'] == '1') {
+                    error_log("PRE-SHOW: ✅ Added " . $emp['name'] . " to working_now (shift: " . $vardiya_kod . ")");
+                }
+            } else {
+                if (isset($_GET['debug']) && $_GET['debug'] == '1') {
+                    error_log("PRE-SHOW: ❌ " . $emp['name'] . " shift info calculation failed");
+                }
+            }
+        } else {
+            $preshow_wrong_shift++;
+            if (isset($_GET['debug']) && $_GET['debug'] == '1') {
+                error_log("PRE-SHOW: " . $emp['name'] . " has wrong shift type: " . $vardiya_kod);
+            }
+        }
+    }
+    
+    if (isset($_GET['debug']) && $_GET['debug'] == '1') {
+        error_log("PRE-SHOW: Summary:");
+        error_log("PRE-SHOW:   - Added: " . $preshow_count);
+        error_log("PRE-SHOW:   - Skipped (already added): " . $preshow_skipped);
+        error_log("PRE-SHOW:   - No shift on " . $actual_today->format('Y-m-d') . ": " . $preshow_no_shift);
+        error_log("PRE-SHOW:   - Wrong shift type: " . $preshow_wrong_shift);
+        error_log("PRE-SHOW: working_now array now has " . count($working_now) . " employees");
+        error_log("PRE-SHOW: not_started_yet array has " . count($not_started_yet) . " employees");
+        
+        if (count($working_now) > 0) {
+            error_log("PRE-SHOW: Employees in working_now:");
+            foreach ($working_now as $idx => $emp_data) {
+                error_log("  " . ($idx+1) . ". " . $emp_data['name'] . " (shift: " . $emp_data['vardiya_kod'] . ")");
+            }
+        }
+        
+        error_log("==================== PRE-SHOW END ====================");
+    }
+} else {
+    if (isset($_GET['debug']) && $_GET['debug'] == '1') {
+        error_log("PRE-SHOW: Skipped (actual current time " . sprintf("%02d:%02d", $actual_current_hour, $actual_current_minute) . " < 23:20)");
+    }
+}
 
-// Yeni: birim önceliklendirme fonksiyonu (istediğiniz sıra)
 function birim_priority($birim) {
     $map = [
         'top inspector' => 1,
@@ -384,11 +623,9 @@ function birim_priority($birim) {
     ];
 
     $b = strtolower(trim((string)$birim));
-    // normalize bazı ayraçları ve fazla boşlukları
     $b = str_replace(['_', '–', '—', '/', '\\'], '-', $b);
     $b = preg_replace('/\s+/', ' ', $b);
 
-    // yaygın yazım varyantları / hataları eşleştirme (lowercase keys)
     $variants = [
         'dealer instpector 1' => 'dealer-inspector-1',
         'dealer instpector 2' => 'dealer-inspector-2',
@@ -404,14 +641,12 @@ function birim_priority($birim) {
 
     if (isset($variants[$b])) $b = $variants[$b];
 
-    return $map[$b] ?? 999; // bilinmeyen birimler en sona
+    return $map[$b] ?? 999;
 }
 
-// Yeni yardımcı: birim değerinden CSS sınıfı üret (ör. "ATTENDANT-1" -> "unit-attendant-1")
 function birim_css_class($birim) {
     $b = strtolower(trim((string)$birim));
     if ($b === '') return '';
-    // replace various separators with hyphen and remove invalid chars
     $b = str_replace([' ', '_', '–', '—', '/', '\\'], '-', $b);
     $b = preg_replace('/[^a-z0-9\-]/', '', $b);
     $b = preg_replace('/-+/', '-', $b);
@@ -425,7 +660,6 @@ usort($not_started_yet, function($a, $b) {
     $pb = birim_priority($b['birim'] ?? '');
     if ($pa !== $pb) return $pa - $pb;
 
-    // öncelik aynıysa mevcut davranış: shift start time
     $sa = ($a['shift_info']['start_hour']*60 + $a['shift_info']['start_minute']);
     $sb = ($b['shift_info']['start_hour']*60 + $b['shift_info']['start_minute']);
     return $sa - $sb;
@@ -446,24 +680,78 @@ usort($working_now, function($a, $b) {
     $pb = birim_priority($b['birim'] ?? '');
     if ($pa !== $pb) return $pa - $pb;
 
-    // aynı öncelikse önce vardiya başlangıcı sonra isim
     $startA = $a['shift_info']['start_hour']*60 + $a['shift_info']['start_minute'];
     $startB = $b['shift_info']['start_hour']*60 + $b['shift_info']['start_minute'];
     if ($startA !== $startB) return $startA - $startB;
     return strcmp($a['name'], $b['name']);
 });
 
-// Manuel personeller için de 'birim' çekilsin
+if (isset($_GET['debug']) && $_GET['debug'] == '1') {
+    error_log("========== FINAL ARRAY COUNTS (after sorting) ==========");
+    error_log("working_now: " . count($working_now) . " employees");
+    error_log("not_started_yet: " . count($not_started_yet) . " employees");
+    error_log("finished: " . count($finished) . " employees");
+    if (count($working_now) > 0) {
+        error_log("working_now employees:");
+        foreach ($working_now as $idx => $emp) {
+            error_log("  " . ($idx+1) . ". " . $emp['name'] . " (" . $emp['vardiya_kod'] . ")");
+        }
+    }
+    error_log("========================================================");
+}
+
 $manual_employees = $pdo->query("SELECT id, name, birim FROM employees WHERE is_active = 1 AND (external_id IS NULL OR external_id = '') ORDER BY name")->fetchAll(PDO::FETCH_ASSOC);
 $areas = $pdo->query("SELECT id, name, color FROM areas ORDER BY name")->fetchAll(PDO::FETCH_ASSOC);
 
-// Manuel personelleri de aynı öncelik ile sırala
 usort($manual_employees, function($a, $b) {
     $pa = birim_priority($a['birim'] ?? '');
     $pb = birim_priority($b['birim'] ?? '');
     if ($pa !== $pb) return $pa - $pb;
     return strcmp($a['name'], $b['name']);
 });
+
+if (isset($_GET['showdebug']) && $_GET['showdebug'] == '1') {
+    echo "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Debug Info</title></head><body style='font-family:Arial; margin:20px;'>";
+    echo "<h1>🔍 Array Debug Info</h1>";
+    echo "<div style='background:#e7f3ff; padding:15px; border-left:4px solid #2196F3; margin:10px 0;'>";
+    echo "<strong>Current Time:</strong> " . $actual_now->format('Y-m-d H:i:s') . " (" . $actual_current_total_minutes . " minutes)<br>";
+    echo "<strong>Pre-show Active:</strong> " . ($actual_current_total_minutes >= 1400 ? "✅ YES" : "❌ NO") . "<br>";
+    echo "<strong>View Date:</strong> " . $view_date->format('Y-m-d') . "<br>";
+    echo "</div>";
+    
+    echo "<h2>Array Counts:</h2>";
+    echo "<ul style='font-size:18px;'>";
+    echo "<li><strong>working_now:</strong> " . count($working_now) . " employees</li>";
+    echo "<li><strong>not_started_yet:</strong> " . count($not_started_yet) . " employees</li>";
+    echo "<li><strong>finished:</strong> " . count($finished) . " employees</li>";
+    echo "</ul>";
+    
+    if (count($working_now) > 0) {
+        echo "<h2 style='color:green;'>✅ working_now employees:</h2>";
+        echo "<table border='1' cellpadding='8' style='border-collapse:collapse; width:100%;'>";
+        echo "<tr style='background:#4CAF50; color:white;'><th>#</th><th>Name</th><th>Shift</th><th>Birim</th><th>External ID</th></tr>";
+        foreach ($working_now as $idx => $emp) {
+            echo "<tr>";
+            echo "<td>" . ($idx+1) . "</td>";
+            echo "<td>" . htmlspecialchars($emp['name']) . "</td>";
+            echo "<td><strong>" . htmlspecialchars($emp['vardiya_kod']) . "</strong></td>";
+            echo "<td>" . htmlspecialchars($emp['birim'] ?? '-') . "</td>";
+            echo "<td><small>" . htmlspecialchars($emp['external_id']) . "</small></td>";
+            echo "</tr>";
+        }
+        echo "</table>";
+    } else {
+        echo "<div style='background:#fff3cd; padding:15px; border-left:4px solid #ffc107;'>";
+        echo "<h2>⚠️ working_now is EMPTY!</h2>";
+        echo "<p>This explains why nothing shows in admin.</p>";
+        echo "</div>";
+    }
+    
+    echo "<hr><p>Access admin normally: <a href='index.php'>index.php</a></p>";
+    echo "<p>Check error logs for detailed debug: <code>tail -f /var/log/php-fpm/error.log</code></p>";
+    echo "</body></html>";
+    exit;
+}
 ?>
 <!DOCTYPE html>
 <html lang="tr">
@@ -472,7 +760,6 @@ usort($manual_employees, function($a, $b) {
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Yönetim Paneli - Breaklist</title>
 <style>
-/* =============== TAM 25 SATIR + RENK ŞERİDİ DÜZELTİLMİŞ CSS =============== */
 * { margin:0; padding:0; box-sizing:border-box; }
 body { font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif; background:#f5f7fa; color:#2c3e50; }
 .container { max-width:2500px; margin:0 auto; padding:15px 10px; }
@@ -526,10 +813,9 @@ main { background:white; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,0.
     padding-bottom:12px;
 }
 
-/* added start column (--start-col) between unit and time slots */
 .grid-header { 
     display:grid; 
-    grid-template-columns: var(--employee-col,172px) var(--unit-col,148px) var(--start-col,96px) repeat(var(--slots,13), minmax(52px,1fr)); 
+    grid-template-columns: var(--overtime-col,80px) var(--employee-col,172px) var(--unit-col,148px) var(--start-col,96px) repeat(var(--slots,13), minmax(52px,1fr));
     background:#e9ecef; 
     border-bottom:2px solid #dee2e6; 
     position:sticky; 
@@ -558,7 +844,7 @@ main { background:white; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,0.
     background:#f8f9fa; 
     border-right:2px solid #dee2e6; 
     position:sticky; 
-    left:0; 
+    left:var(--overtime-col,80px); 
     z-index:12; 
     box-shadow:2px 0 5px rgba(0,0,0,0.05); 
     padding:6px 8px; 
@@ -571,20 +857,32 @@ main { background:white; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,0.
     background:#fbfbfb;
     border-right:2px solid #dee2e6;
     position:sticky;
-    left:var(--employee-col,172px);
+    left:calc(var(--overtime-col,80px) + var(--employee-col,172px));
     z-index:11;
     padding:6px 8px;
     min-height:44px;
     font-size:12px;
     cursor: pointer;
 }
-/* start header (shift start) - sticky next to unit */
+.overtime-header {
+    text-align:center;
+    background:#fbfbfb;
+    border-right:2px solid #dee2e6;
+    position:sticky;
+    left:0;
+    z-index:11;
+    padding:6px 4px;
+    min-height:44px;
+    font-size:10px;
+    line-height:1.1;
+    cursor: default;
+}
 .start-header {
     text-align:left;
     background:#fbfbfb;
     border-right:2px solid #dee2e6;
     position:sticky;
-    left:calc(var(--employee-col,172px) + var(--unit-col,148px));
+    left:calc(var(--overtime-col,80px) + var(--employee-col,172px) + var(--unit-col,148px));
     z-index:11;
     padding:6px 8px;
     min-height:44px;
@@ -592,11 +890,28 @@ main { background:white; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,0.
     cursor: pointer;
 }
 
-/* grid rows updated too */
+.header-cell.sorted-asc::after {
+    content: ' ▲';
+    font-size: 10px;
+    color: #3498db;
+    margin-left: 4px;
+}
+.header-cell.sorted-desc::after {
+    content: ' ▼';
+    font-size: 10px;
+    color: #3498db;
+    margin-left: 4px;
+}
+.header-cell.sorted-asc,
+.header-cell.sorted-desc {
+    background: #e8f4f8;
+    font-weight: 600;
+}
+
 .grid-body { display:flex; flex-direction:column; gap:1px; }
 .grid-row { 
     display:grid; 
-    grid-template-columns: var(--employee-col,172px) var(--unit-col,148px) var(--start-col,96px) repeat(var(--slots,13), minmax(52px,1fr)); 
+    grid-template-columns: var(--overtime-col,80px) var(--employee-col,172px) var(--unit-col,148px) var(--start-col,96px) repeat(var(--slots,13), minmax(52px,1fr));
     background:white; 
     transition:background-color 0.15s; 
     min-height: 32px; 
@@ -604,32 +919,65 @@ main { background:white; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,0.
 }
 .grid-row:hover { background:#f8f9fa; }
 
-/* STRONG VISIBLE ROW HIGHLIGHT
-   The selected row will have a clear full-row background color that overrides per-cell gradients.
-   Use !important to ensure the highlight is visible even for specially colored unit rows.
-*/
 .grid-row.selected {
-    background: #bfeaff !important; /* visible blue tint */
+    background: #bfeaff !important;
     color: #023045 !important;
-    box-shadow: inset 6px 0 0 0 #0ea5e9 !important; /* left accent */
+    box-shadow: inset 6px 0 0 0 #0ea5e9 !important;
 }
 .grid-row.selected .employee-cell,
 .grid-row.selected .unit-cell,
+.grid-row.selected .overtime-cell,
 .grid-row.selected .start-cell,
 .grid-row.selected .time-cell {
     background: #bfeaff !important;
     color: #023045 !important;
-    /* Remove subtle inner shadows that might conflict */
     box-shadow: none !important;
 }
 
-/* Keep selects' own background (area color) visible, but make sure text is readable on the selected row */
 .grid-row.selected .area-select {
     color: #023045 !important;
-    /* do not override background-color of the select which indicates area; keep it */
 }
 
-/* employee-cell */
+.grid-row.unit-attendant-1 {
+    background: linear-gradient(90deg, #ffc966 0%, #ffd685 100%) !important;
+}
+
+.grid-row.unit-attendant-1:hover {
+    background: linear-gradient(90deg, #ffb84d 0%, #ffc966 100%) !important;
+}
+
+.grid-row.unit-attendant-1 .employee-cell {
+    background: linear-gradient(90deg, #e0b77a 0%, #cfa96f 100%) !important;
+    color: #7c4a00 !important;
+    font-weight: 600 !important;
+}
+
+.grid-row.unit-attendant-1 .unit-cell,
+.grid-row.unit-attendant-1 .start-cell {
+    background: linear-gradient(90deg, #ffe0a3 0%, #ffead6 100%) !important;
+    color: #7c4a00 !important;
+}
+
+.grid-row.unit-attendant-2 {
+    background: linear-gradient(90deg, #f08080 0%, #f5a3a3 100%) !important;
+}
+
+.grid-row.unit-attendant-2:hover {
+    background: linear-gradient(90deg, #e85d5d 0%, #f08080 100%) !important;
+}
+
+.grid-row.unit-attendant-2 .employee-cell {
+    background: linear-gradient(90deg, #d6989e 0%, #dd9f9f 100%) !important;
+    color: #721c24 !important;
+    font-weight: 600 !important;
+}
+
+.grid-row.unit-attendant-2 .unit-cell,
+.grid-row.unit-attendant-2 .start-cell {
+    background: linear-gradient(90deg, #ffc2c2 0%, #ffd6d6 100%) !important;
+    color: #721c24 !important;
+}
+
 .employee-cell { 
     padding:2px 6px; 
     font-weight:600; 
@@ -637,7 +985,7 @@ main { background:white; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,0.
     background:linear-gradient(90deg,#f8f9fa 0%,#e9ecef 100%); 
     border-right:2px solid #dee2e6; 
     position:sticky; 
-    left:0; 
+    left:var(--overtime-col,80px); 
     z-index:13; 
     box-shadow:2px 0 5px rgba(0,0,0,0.03); 
     display:flex; 
@@ -670,7 +1018,6 @@ main { background:white; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,0.
     max-height: 12px;
 }
 
-/* unit column */
 .unit-cell {
     padding:2px 8px;
     font-weight:600;
@@ -678,7 +1025,7 @@ main { background:white; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,0.
     background:linear-gradient(90deg,#ffffff 0%,#f8f9fa 100%);
     border-right:2px solid #dee2e6;
     position:sticky;
-    left:var(--employee-col,172px);
+    left:calc(var(--overtime-col,80px) + var(--employee-col,172px));
     z-index:12;
     display:flex;
     align-items:center;
@@ -690,7 +1037,58 @@ main { background:white; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,0.
     text-overflow:ellipsis;
 }
 
-/* new start column cell - sticky to the right of unit column */
+.overtime-cell {
+    padding:2px 4px;
+    background:linear-gradient(90deg,#ffffff 0%,#f8f9fa 100%);
+    border-right:2px solid #dee2e6;
+    position:sticky;
+    left:0;
+    z-index:11;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    min-height:32px;
+    height:32px;
+    overflow:hidden;
+}
+
+.overtime-btn {
+    width: 35px;
+    height: 26px;
+    padding: 0;
+    border: 1px solid #dee2e6;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+}
+
+.overtime-btn.inactive {
+    background: #f8f9fa;
+    color: #6c757d;
+}
+
+.overtime-btn.inactive:hover {
+    background: #e9ecef;
+    border-color: #adb5bd;
+}
+
+.overtime-btn.active {
+    background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+    color: white;
+    border-color: #28a745;
+    box-shadow: 0 2px 4px rgba(40,167,69,0.3);
+}
+
+.overtime-btn.active:hover {
+    background: linear-gradient(135deg, #218838 0%, #1aa87e 100%);
+}
+
 .start-cell {
     padding:2px 8px;
     font-weight:600;
@@ -698,7 +1096,7 @@ main { background:white; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,0.
     background:linear-gradient(90deg,#ffffff 0%,#fbfbfb 100%);
     border-right:2px solid #dee2e6;
     position:sticky;
-    left:calc(var(--employee-col,172px) + var(--unit-col,148px));
+    left:calc(var(--overtime-col,80px) + var(--employee-col,172px) + var(--unit-col,148px));
     z-index:11;
     display:flex;
     align-items:center;
@@ -710,7 +1108,6 @@ main { background:white; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,0.
     text-overflow:ellipsis;
 }
 
-/* time cell and others unchanged */
 .time-cell { 
     padding:1px 2px; 
     border-right:1px solid #e9ecef; 
@@ -732,7 +1129,8 @@ main { background:white; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,0.
     padding:1px 3px !important;
     border:1px solid #dee2e6; 
     border-radius:3px; 
-    font-size:9.5px !important; 
+    font-size:11.5px !important; 
+    font-weight:700 !important;
     background:white; 
     color:#2c3e50; 
     cursor:pointer; 
@@ -744,6 +1142,11 @@ main { background:white; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,0.
     appearance: none; 
     margin:0;
     box-sizing:border-box;
+}
+.area-select option {
+    font-weight:700;
+    font-size:11.5px;
+    padding:5px;
 }
 .area-select[disabled] { opacity:0.6; cursor:not-allowed; }
 .area-select:hover { border-color:#3498db; }
@@ -813,13 +1216,14 @@ main { background:white; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,0.
     padding:0 3px; 
 }
 
-/* button styles / dropdowns / modals still unchanged */
 .btn-success { background:linear-gradient(135deg,#28a745 0%,#218838 100%); color:white; }
 .btn-success:hover { background:linear-gradient(135deg,#218838 0%,#1e7e34 100%); transform:translateY(-1px); box-shadow:0 4px 8px rgba(40,167,69,0.4); }
 .btn-info { background:linear-gradient(135deg,#1e88e5 0%,#0d47a1 100%); color:white; }
 .btn-info:hover { background:linear-gradient(135deg,#1565c0 0%,#0a2463 100%); transform:translateY(-1px); box-shadow:0 4px 8px rgba(23,105,223,0.4); }
 .btn-note-edit { background:linear-gradient(135deg,#8b5cf6 0%,#7c3aed 100%); color:white; }
 .btn-note-edit:hover { background:linear-gradient(135deg,#7c3aed 0%,#6d28d9 100%); transform:translateY(-1px); box-shadow:0 4px 8px rgba(124,58,237,0.4); }
+.btn-call-personnel { background:linear-gradient(135deg,#10b981 0%,#059669 100%); color:white; }
+.btn-call-personnel:hover { background:linear-gradient(135deg,#059669 0%,#047857 100%); transform:translateY(-1px); box-shadow:0 4px 8px rgba(16,185,129,0.4); }
 .btn-nav { background:linear-gradient(135deg,#4b5563 0%,#374151 100%); padding:7px 12px; font-size:12px; color:white; text-decoration:none; border-radius:5px; }
 .btn-nav:hover { background:linear-gradient(135deg,#374151 0%,#1f2937 100%); }
 .btn-nav.active { background:linear-gradient(135deg,#1e88e5 0%,#0d47a1 100%); box-shadow:0 0 0 2px rgba(30,136,229,0.4); }
@@ -859,17 +1263,33 @@ main { background:white; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,0.
 .note-modal-buttons .delete-btn { background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%); color:white; margin-right:auto; }
 .note-modal-buttons .delete-btn:hover { background:linear-gradient(135deg,#dc2626 0%,#b91c1c 100%); transform:translateY(-1px); box-shadow:0 4px 12px rgba(239,68,68,.4); }
 
+#callPersonnelModal { display:none; position:fixed; z-index:3000; left:0; top:0; width:100%; height:100%; background-color:rgba(0,0,0,.7); backdrop-filter:blur(5px); }
+#callPersonnelModalContent { background:linear-gradient(135deg,#0f172a 0%,#1e293b 100%); margin:5% auto; padding:20px; border-radius:12px; width:90%; max-width:700px; max-height:80vh; overflow-y:auto; box-shadow:0 10px 40px rgba(0,0,0,.5); border:1px solid #334155; position:relative; animation:modalSlideIn .3s; }
+#callPersonnelModal .close { position:absolute; right:12px; top:12px; font-size:24px; color:#94a3b8; cursor:pointer; transition:color .2s; }
+#callPersonnelModal .close:hover { color:#f87171; }
+#callPersonnelModal h2 { color:#60a5fa; margin-bottom:16px; font-size:20px; display:flex; align-items:center; gap:8px; }
+#callPersonnelModal h2::before { content:'📞'; font-size:20px; }
+.off-shift-employees-list { display:flex; flex-direction:column; gap:10px; }
+.off-shift-employee-item { background:rgba(30,41,59,0.6); border:1px solid #334155; border-radius:8px; padding:12px 15px; display:flex; justify-content:space-between; align-items:center; transition:all .2s; }
+.off-shift-employee-item:hover { background:rgba(51,65,85,0.4); border-color:#475569; }
+.off-shift-employee-info { flex:1; }
+.off-shift-employee-name { color:#e2e8f0; font-weight:600; font-size:15px; margin-bottom:4px; }
+.off-shift-employee-details { color:#94a3b8; font-size:13px; display:flex; gap:12px; align-items:center; }
+.off-shift-employee-details span { display:inline-flex; align-items:center; gap:4px; }
+.call-employee-btn { background:linear-gradient(135deg,#10b981 0%,#059669 100%); color:white; border:none; padding:8px 20px; border-radius:6px; font-weight:600; cursor:pointer; font-size:13px; transition:all .2s; white-space:nowrap; }
+.call-employee-btn:hover { background:linear-gradient(135deg,#059669 0%,#047857 100%); transform:translateY(-1px); box-shadow:0 4px 12px rgba(16,185,129,.4); }
+.no-off-shift-employees { text-align:center; padding:40px 20px; color:#94a3b8; font-size:15px; }
+
 #saveStatus { margin:0; padding:6px 12px; border-radius:6px; font-weight:600; min-width:160px; text-align:center; font-size:13px; }
 .current-time-display { margin-left:auto !important; padding:6px 12px; background:#e9ecef; border-radius:8px; font-weight:700; font-size:14px; box-shadow:0 2px 6px rgba(0,0,0,.1); }
 
-...
-/* (CSS and the rest of HTML/JS unchanged from original file for brevity) */
+.nav-buttons-container { display:none !important; }
+
 </style>
 </head>
 <body>
 <div class="container">
 
-  <!-- TOPBAR: header + note + controls + stats (sticky) -->
   <div class="topbar" role="region" aria-label="Üst Kontroller">
     <div class="inner">
       <header>
@@ -893,8 +1313,7 @@ main { background:white; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,0.
 
           <span id="saveStatus"></span>
 
-          <!-- GÖRÜNTÜLENEN GÜN VE GEÇİŞ BUTONLARI -->
-          <div style="display:flex; gap:6px; align-items:center;">
+          <div class="nav-buttons-container" style="display:flex; gap:6px; align-items:center;">
             <form method="get" style="display:inline;">
               <input type="hidden" name="day_offset" value="<?= htmlspecialchars($day_offset - 1, ENT_QUOTES) ?>">
               <button type="submit" class="btn btn-nav" title="Önceki gün">⬅️ Geri</button>
@@ -907,12 +1326,16 @@ main { background:white; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,0.
               <input type="hidden" name="day_offset" value="<?= htmlspecialchars($day_offset + 1, ENT_QUOTES) ?>">
               <button type="submit" class="btn btn-nav" title="Sonraki gün">➡️ İleri</button>
             </form>
-            <div style="padding:6px 10px;background:#f1f5f9;border-radius:6px;margin-left:8px;font-weight:700;">
-                Görüntülenen Gün: <?= $view_date->format('Y-m-d') ?>
-            </div>
           </div>
 
-          <div class="current-time-display">🕐 <strong id="currentTimeDisplay"><?= $current_time->format('H:i:s') ?></strong></div>
+          <div style="display:flex; gap:8px; align-items:center; margin-left:auto;">
+            <div style="padding:6px 10px;background:#f1f5f9;border-radius:6px;font-weight:700;">
+                📅 <?= $view_date->format('d.m.Y') ?>
+            </div>
+            <div style="padding:6px 12px;background:#e9ecef;border-radius:8px;font-weight:700;font-size:14px;box-shadow:0 2px 6px rgba(0,0,0,.1);">
+                🕐 <strong id="currentTimeDisplay"><?= $current_time->format('H:i:s') ?></strong>
+            </div>
+          </div>
         </div>
 
         <div class="controls-bottom" aria-label="Alt Kontroller">
@@ -922,6 +1345,7 @@ main { background:white; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,0.
           <a href="index.php" class="btn btn-nav active">🔄 Yenile</a>
 
           <button onclick="openNoteModal()" class="btn btn-note-edit">📝 Not Düzenle</button>
+          <button onclick="openCallPersonnelModal()" class="btn btn-call-personnel" title="Mesai dışı personelleri çağır">📞 Personel Çağır</button>
         </div>
       </div>
 
@@ -970,7 +1394,7 @@ main { background:white; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,0.
           <?php endif; ?>
         </div>
 
-        <div class="stat-box" style="background:#f8d7da;border-left:3px solid #dc3545;position:relative;padding:8px;">
+        <div class="stat-box" style="background:#f8d7da;border-left:3px solid #dc3545;position:relative;padding:8px;display:none;">
           <div>
             <div style="font-size:18px;font-weight:700;color:#721c24;"><?= count($finished) ?></div>
             <div style="color:#721c24;font-size:12px;">
@@ -996,20 +1420,18 @@ main { background:white; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,0.
 
     </div>
   </div>
-  <!-- /TOPBAR -->
 
 <main>
 <?php
 $slot_duration = 20 * 60;
-// NOTE: burada $now değeri artık seçilen view_date zamanına göre alınır
 $now = $current_time->getTimestamp();
 $current_slot_start = floor($now / $slot_duration) * $slot_duration;
 $time_slots = 9;
-$current_index = 2;
+$current_index = 5;
 ?>
-<!-- set CSS vars for employee, unit and start column widths -->
-<div class="grid-container" style="--slots:<?= $time_slots ?>; --employee-col:172px; --unit-col:148px; --start-col:96px;">
+<div class="grid-container" style="--slots:<?= $time_slots ?>; --employee-col:172px; --unit-col:148px; --overtime-col:40px; --start-col:96px;">
   <div class="grid-header">
+    <div class="header-cell overtime-header" id="hdrOvertime">MESAİ</div>
     <div class="header-cell employee-header" id="hdrPersonel">PERSONEL</div>
     <div class="header-cell unit-header" id="hdrBirim">BİRİM</div>
     <div class="header-cell start-header" id="hdrBaslama">BAŞ. SAAT</div>
@@ -1043,8 +1465,16 @@ $current_index = 2;
         $start_minutes = ($employee['shift_info']['start_hour']*60 + $employee['shift_info']['start_minute']);
         $row_unit_class = birim_css_class($employee['birim'] ?? '');
     ?>
-    <div class="grid-row <?= htmlspecialchars($row_unit_class) ?>" data-employee-id="<?= htmlspecialchars($employee['id'], ENT_QUOTES) ?>" data-name="<?= htmlspecialchars($employee['name'], ENT_QUOTES) ?>" data-start="<?= $start_minutes ?>" data-birim="<?= htmlspecialchars($employee['birim'] ?? '', ENT_QUOTES) ?>" tabindex="0" role="row" aria-selected="false">
-      <!-- İsim sütunu -->
+    <div class="grid-row <?= htmlspecialchars($row_unit_class) ?>" data-employee-id="<?= htmlspecialchars($employee['id'], ENT_QUOTES) ?>" data-name="<?= htmlspecialchars($employee['name'], ENT_QUOTES) ?>" data-start="<?= $start_minutes ?>" data-birim="<?= htmlspecialchars($employee['birim'] ?? '', ENT_QUOTES) ?>" data-vardiya="<?= htmlspecialchars($employee['vardiya_kod'], ENT_QUOTES) ?>" tabindex="0" role="row" aria-selected="false">
+      <div class="overtime-cell">
+        <?php $is_overtime = in_array($employee['id'], $all_overtime_employees); ?>
+        <button class="overtime-btn <?= $is_overtime ? 'active' : 'inactive' ?>" 
+                data-employee-id="<?= $employee['id'] ?>"
+                title="<?= $is_overtime ? 'Fazla mesaiden çıkar' : 'Fazla mesaiye ekle' ?>">
+          <span>+</span>
+        </button>
+      </div>
+
       <div class="employee-cell" style="background:linear-gradient(90deg,#d4edda 0%,#e9ecef 100%);">
           <div>
             <?php if (!empty($employee['external_id'])): ?>
@@ -1055,14 +1485,16 @@ $current_index = 2;
                 <?= htmlspecialchars($employee['name']) ?>
             <?php endif; ?>
           </div>
-          <div class="vardiya"><?= htmlspecialchars($employee['vardiya_kod']) ?> • <?= sprintf('%02d:%02d', $employee['shift_info']['start_hour'], $employee['shift_info']['start_minute']) ?>-<?= sprintf('%02d:%02d', $employee['shift_info']['end_hour'], $employee['shift_info']['end_minute']) ?></div>
+          <?php 
+          $shift_time = get_shift_time_display($employee['vardiya_kod']);
+          if ($shift_time): ?>
+          <div class="vardiya"><?= htmlspecialchars($shift_time) ?></div>
+          <?php endif; ?>
       </div>
 
-      <!-- Birim sütunu -->
       <div class="unit-cell"><?= htmlspecialchars($employee['birim'] ?? '') ?></div>
 
-      <!-- Başlangıç saati sütunu (yeni) -->
-      <div class="start-cell"><?= sprintf('%02d:%02d', $employee['shift_info']['start_hour'], $employee['shift_info']['start_minute']) ?></div>
+      <div class="start-cell"><?= htmlspecialchars($employee['vardiya_kod']) ?></div>
 
       <?php for ($i = 0; $i < $time_slots; $i++):
           $offset = $i - $current_index;
@@ -1103,16 +1535,22 @@ $current_index = 2;
         $row_unit_class = birim_css_class($employee['birim'] ?? '');
     ?>
     <div class="grid-row <?= htmlspecialchars($row_unit_class) ?>" data-employee-id="<?= htmlspecialchars($employee['id'], ENT_QUOTES) ?>" data-name="<?= htmlspecialchars($employee['name'], ENT_QUOTES) ?>" data-start="99999" data-birim="<?= htmlspecialchars($employee['birim'] ?? '', ENT_QUOTES) ?>" tabindex="0" role="row" aria-selected="false">
-      <!-- Manuel: isim sütunu -->
+      <div class="overtime-cell">
+        <?php $is_overtime = in_array($employee['id'], $all_overtime_employees); ?>
+        <button class="overtime-btn <?= $is_overtime ? 'active' : 'inactive' ?>" 
+                data-employee-id="<?= $employee['id'] ?>"
+                title="<?= $is_overtime ? 'Fazla mesaiden çıkar' : 'Fazla mesaiye ekle' ?>">
+          <span>+</span>
+        </button>
+      </div>
+
       <div class="employee-cell" style="background:linear-gradient(90deg,#d1ecf1 0%,#f8f9fa 100%);">
           <div><?= htmlspecialchars($employee['name']) ?></div>
           <div class="vardiya">Ekstra</div>
       </div>
 
-      <!-- Manuel: birim sütunu -->
       <div class="unit-cell"><?= htmlspecialchars($employee['birim'] ?? 'Manuel') ?></div>
 
-      <!-- Manuel: Başlangıç saati bilinmiyorsa '-' -->
       <div class="start-cell">-</div>
 
       <?php for ($i = 0; $i < $time_slots; $i++): 
@@ -1157,7 +1595,6 @@ $current_index = 2;
 
 </div>
 
-<!-- FOTOĞRAF MODAL (isimler link olduğunda açılacak) -->
 <div id="photoModal" class="modal" aria-hidden="true">
     <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
         <span class="close" id="photoModalClose">&times;</span>
@@ -1171,7 +1608,6 @@ $current_index = 2;
     </div>
 </div>
 
-<!-- NOT MODAL -->
 <div id="noteModal">
 <div id="noteModalContent">
 <span class="close" onclick="closeNoteModal()">&times;</span>
@@ -1185,10 +1621,44 @@ $current_index = 2;
 </div>
 </div>
 
+<div id="callPersonnelModal">
+<div id="callPersonnelModalContent">
+<span class="close" onclick="closeCallPersonnelModal()">&times;</span>
+<h2>Mesai Dışı Personeller</h2>
+<div class="off-shift-employees-list">
+<?php
+$off_shift_employees = array_merge($not_started_yet, $finished);
+
+if (empty($off_shift_employees)) {
+    echo '<div class="no-off-shift-employees">Şu anda mesai dışı personel bulunmuyor.</div>';
+} else {
+    foreach ($off_shift_employees as $emp) {
+        $emp_id = $emp['id'];
+        $emp_name = htmlspecialchars($emp['name']);
+        $emp_unit = isset($emp['birim']) ? htmlspecialchars($emp['birim']) : '-';
+        $emp_shift = isset($emp['vardiya_kod']) ? htmlspecialchars($emp['vardiya_kod']) : '-';
+        $emp_start = isset($emp['start_time']) ? htmlspecialchars($emp['start_time']) : '-';
+        
+        echo '<div class="off-shift-employee-item">';
+        echo '<div class="off-shift-employee-info">';
+        echo '<div class="off-shift-employee-name">' . $emp_name . '</div>';
+        echo '<div class="off-shift-employee-details">';
+        if ($emp_unit !== '-') echo '<span>🏢 ' . $emp_unit . '</span>';
+        if ($emp_shift !== '-') echo '<span>📋 Vardiya: ' . $emp_shift . '</span>';
+        if ($emp_start !== '-') echo '<span>🕐 Başlangıç: ' . $emp_start . '</span>';
+        echo '</div>';
+        echo '</div>';
+        echo '<button class="call-employee-btn" onclick="callEmployee(' . $emp_id . ', \'' . addslashes($emp_name) . '\')">✓ Çağır</button>';
+        echo '</div>';
+    }
+}
+?>
+</div>
+</div>
+</div>
+
 <script>
-// ==================== RENK ŞERİDİ + OTOMATİK KAYIT ====================
 let changedCells = new Set();
-// slot duration from server-side (seconds)
 const SLOT_DURATION = <?= $slot_duration ?>;
 
 function applyAreaColor(sel, color) {
@@ -1221,27 +1691,18 @@ function markAsChanged(selectElement) {
     applyAreaColor(selectElement, color);
 }
 
-/* NEW: handleAreaChange
-   - Checks per-employee assignments for the chosen area.
-   - If after this change the employee would have 4 or more slots assigned to the same area,
-     prompts the user "Emin misiniz?".
-*/
 function handleAreaChange(sel) {
-    // get new value
     const newArea = sel.value;
     const employeeId = sel.dataset.employeeId;
     const prevArea = sel.dataset.currentAreaId ? String(sel.dataset.currentAreaId) : '';
 
-    // empty selection -> proceed normally (this clears)
     if (!newArea) {
         markAsChanged(sel);
         autoSaveAssignment(sel);
-        // update slot options (so others see the change)
         updateOptionsForSlot(sel.dataset.slotTime);
         return;
     }
 
-    // if selecting same as already current, no prompt (but still process)
     if (String(newArea) === String(prevArea)) {
         markAsChanged(sel);
         autoSaveAssignment(sel);
@@ -1249,39 +1710,63 @@ function handleAreaChange(sel) {
         return;
     }
 
-    // count how many assignments of this area exist for this employee (across all visible selects)
     const employeeSelects = Array.from(document.querySelectorAll(`.area-select[data-employee-id="${employeeId}"]`));
+    
+    employeeSelects.sort((a, b) => Number(a.dataset.slotTime) - Number(b.dataset.slotTime));
+    
+    const currentIndex = employeeSelects.findIndex(s => s === sel);
+    if (currentIndex === -1) return;
+    
     let count = 0;
-    employeeSelects.forEach(s => {
-        // Determine effective value for that select (if user already changed some other selects, consider current DOM value)
+    const currentSlotTime = Number(sel.dataset.slotTime);
+    
+    for (let i = currentIndex; i < employeeSelects.length; i++) {
+        const s = employeeSelects[i];
+        const expectedSlotTime = currentSlotTime + ((i - currentIndex) * SLOT_DURATION);
+        
+        if (Number(s.dataset.slotTime) !== expectedSlotTime) break;
+        
         const val = (s === sel) ? newArea : (s.value && s.value !== '' ? String(s.value) : (s.dataset.currentAreaId ? String(s.dataset.currentAreaId) : ''));
-        if (val && String(val) === String(newArea)) count++;
-    });
+        if (val && String(val) === String(newArea)) {
+            count++;
+        } else {
+            break;
+        }
+    }
+    
+    for (let i = currentIndex - 1; i >= 0; i--) {
+        const s = employeeSelects[i];
+        const expectedSlotTime = currentSlotTime - ((currentIndex - i) * SLOT_DURATION);
+        
+        if (Number(s.dataset.slotTime) !== expectedSlotTime) break;
+        
+        const val = s.value && s.value !== '' ? String(s.value) : (s.dataset.currentAreaId ? String(s.dataset.currentAreaId) : '');
+        if (val && String(val) === String(newArea)) {
+            count++;
+        } else {
+            break;
+        }
+    }
 
-    // If count is 4 or more, require confirmation
     if (count >= 4) {
-        const confirmMsg = `Bu personele aynı alan ${count} kez atanmış olacak. Devam etmek istediğinize emin misiniz?`;
+        const confirmMsg = `Bu personele aynı alan ${count} kez ard arda atanmış olacak. Devam etmek istediğinize emin misiniz?`;
         if (!confirm(confirmMsg)) {
-            // revert selection to previous (currentAreaId) and restore visuals
             sel.value = prevArea || '';
             const opt = Array.from(sel.options).find(o => String(o.value) === prevArea);
             const color = (opt && opt.dataset && opt.dataset.color) ? opt.dataset.color : '';
             applyAreaColor(sel, color);
             sel.classList.remove('changed');
-            // ensure options/hiding are consistent
-            updateSlotsAfterBatch([]); // will update all slots now
+            updateSlotsAfterBatch([]);
             updateOptionsForSlot(sel.dataset.slotTime);
             return;
         }
     }
 
-    // proceed normally
     markAsChanged(sel);
     autoSaveAssignment(sel);
     updateOptionsForSlot(sel.dataset.slotTime);
 }
 
-/* ================== AREA SIRALAMASI ================== */
 function normalizeForOrder(text) {
     if (!text) return '';
     let t = String(text).toUpperCase().trim();
@@ -1353,7 +1838,6 @@ function reorderAllSelects() {
     document.querySelectorAll('.area-select').forEach(sel => reorderOptionsForSelect(sel));
 }
 
-/* UNIQUE OPTIONS PER SLOT */
 function initUniqueOptions() {
     reorderAllSelects();
     const slots = new Set(Array.from(document.querySelectorAll('.area-select')).map(s => s.dataset.slotTime));
@@ -1410,7 +1894,6 @@ function updateOptionsForSlot(slot) {
     });
 }
 
-/* UPDATED: updateSlotsAfterBatch updates given slots or all slots if assignments empty */
 function updateSlotsAfterBatch(assignments) {
     const slots = new Set();
 
@@ -1433,7 +1916,6 @@ function updateSlotsAfterBatch(assignments) {
     });
 }
 
-/* helpers for +20 slot and batch actions */
 function getPlus20TargetSelect() {
     const currentSel = document.querySelector('.area-select.current-select');
     if (!currentSel) return null;
@@ -1517,7 +1999,6 @@ function assignSmileToUnassignedInCurrentSlot() {
     });
 }
 
-/* SAVE / AUTO-SAVE */
 function autoSaveAssignment(selectElement) {
     const employeeId = selectElement.dataset.employeeId;
     const slotTime = selectElement.dataset.slotTime;
@@ -1644,7 +2125,6 @@ function saveAssignments() {
     });
 }
 
-/* ================== clearAll (only +20 slot) ================== */
 function clearAll() {
     const targetSel = getPlus20TargetSelect();
     if (!targetSel) {
@@ -1735,7 +2215,6 @@ function clearAll() {
     });
 }
 
-/* ================== clearColumn (current & future columns) ================== */
 function clearColumn(slot) {
     const nowSec = Math.floor(Date.now() / 1000);
     const slotNum = Number(slot);
@@ -1844,7 +2323,6 @@ function showStatus(message, type) {
     }, 3000);
 }
 
-/* init buttons */
 function initColumnEditButtons() {
     document.querySelectorAll('.edit-column-btn').forEach(btn => {
         btn.addEventListener('click', function() {
@@ -1899,7 +2377,6 @@ function initClearButtons() {
     });
 }
 
-// NOT modal functions
 function openNoteModal() {
     document.getElementById('noteModal').style.display = 'block';
     document.getElementById('noteTextarea').focus();
@@ -1962,15 +2439,52 @@ function deleteNote() {
     });
 }
 
+function openCallPersonnelModal() {
+    document.getElementById('callPersonnelModal').style.display = 'block';
+}
+
+function closeCallPersonnelModal() {
+    document.getElementById('callPersonnelModal').style.display = 'none';
+}
+
+function callEmployee(empId, empName) {
+    if (!confirm('Çağır: ' + empName + '\n\nBu personel için fazla mesai aktif edilecek ve ekrana geri gelecek. Onaylıyor musunuz?')) {
+        return;
+    }
+    
+    fetch('index.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'action=toggle_overtime&employee_id=' + empId
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            alert('✓ ' + empName + ' başarıyla çağrıldı ve fazla mesai aktif edildi!');
+            location.reload();
+        } else {
+            alert('❌ Hata: ' + (data.message || 'Bir sorun oluştu'));
+        }
+    })
+    .catch(err => {
+        console.error('Error calling employee:', err);
+        alert('❌ Bağlantı hatası oluştu');
+    });
+}
+
 window.onclick = function(event) {
     const modal = document.getElementById('noteModal');
+    const callModal = document.getElementById('callPersonnelModal');
     if (event.target === modal) closeNoteModal();
+    if (event.target === callModal) closeCallPersonnelModal();
 };
 document.addEventListener('keydown', function(event) {
-    if (event.key === 'Escape') closeNoteModal();
+    if (event.key === 'Escape') {
+        closeNoteModal();
+        closeCallPersonnelModal();
+    }
 });
 
-/* PHOTO MODAL */
 const photoModal = document.getElementById('photoModal');
 const photoModalClose = document.getElementById('photoModalClose');
 const photoContainer = document.getElementById('photoContainer');
@@ -2052,16 +2566,6 @@ document.addEventListener('click', function(e){
     }
 });
 
-/* ========== GRID SORTING (PERSONEL / BİRİM / BAŞ. SAAT / SAAT SÜTUNLARI) ========== */
-/*
- - Personele basınca personele göre a-z sırala
- - Başlama zamanına basınca küçükten büyüğe sıralayacak
- - Birime basınca özel sıra kullanacak:
-   ["ATTENDANT-1","ATTENDANT-2","TRAINING ATTENDANT", "CARD DESK","CARD DESK-1","CARD DESK-2"]
- - Saat sütunlarına tıklanınca o sütundaki seçili/alınan alan adına göre alfabetik sırala (A→Z / Z→A toggle)
- - Separator (Ekstra Eklenen Personeller) korunacak, her iki bölüm ayrı ayrı sıralanır.
-*/
-
 document.addEventListener('DOMContentLoaded', function() {
     function updateTopbarHeightVar() {
         const topbar = document.querySelector('.topbar');
@@ -2071,7 +2575,6 @@ document.addEventListener('DOMContentLoaded', function() {
     updateTopbarHeightVar();
     window.addEventListener('resize', updateTopbarHeightVar);
 
-    // Helper to select the row that contains a given element (visual-only)
     function selectRowOf(element) {
         const row = element.closest('.grid-row');
         if (!row) return;
@@ -2083,7 +2586,6 @@ document.addEventListener('DOMContentLoaded', function() {
         row.setAttribute('aria-selected', 'true');
     }
 
-    // Apply area colors and make selects also trigger row selection when focused/changed/clicked.
     document.querySelectorAll('.area-select').forEach(function(sel) {
         if (sel.value && sel.value !== '') {
             const opt = sel.options[sel.selectedIndex];
@@ -2091,7 +2593,6 @@ document.addEventListener('DOMContentLoaded', function() {
             applyAreaColor(sel, color);
         }
 
-        // When user focuses, mouses down or changes a select, highlight the whole row.
         sel.addEventListener('focus', function() { selectRowOf(sel); });
         sel.addEventListener('mousedown', function() { selectRowOf(sel); });
         sel.addEventListener('change', function() { selectRowOf(sel); });
@@ -2100,6 +2601,36 @@ document.addEventListener('DOMContentLoaded', function() {
     initColumnEditButtons();
     initClearButtons();
     initUniqueOptions();
+
+    document.querySelectorAll('.overtime-btn').forEach(function(btn) {
+        btn.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            
+            const employeeId = this.dataset.employeeId;
+            const isActive = this.classList.contains('active');
+            
+            fetch('', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: 'action=toggle_overtime&employee_id=' + employeeId
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    location.reload();
+                } else {
+                    alert('Fazla mesai değiştirilemedi.');
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Bir hata oluştu.');
+            });
+        });
+    });
 
     const assignBtn = document.getElementById('assignSmileBtn');
     if (assignBtn) assignBtn.addEventListener('click', function() {
@@ -2120,15 +2651,13 @@ document.addEventListener('DOMContentLoaded', function() {
     updateCurrentTime();
     setInterval(updateCurrentTime, 1000);
 
-    // ---------- Sorting logic ----------
     const gridBody = document.getElementById('gridBody');
     const hdrPersonel = document.getElementById('hdrPersonel');
     const hdrBirim = document.getElementById('hdrBirim');
     const hdrBaslama = document.getElementById('hdrBaslama');
 
-    // Custom birim order requested by user
     const customUnitOrder = [
-        "ATTENDANT-1","ATTENDANT-2","TRAINING ATTENDANT","CARD DESK","CARD DESK-1","CARD DESK-2"
+        "ATTENDANT-1","ATTENDANT-2","ATTENDANT-3","TRAINING ATTENDANT","CARD DESK","CARD DESK-1","CARD DESK-2"
     ];
     const unitRankMap = (function() {
         const m = {};
@@ -2139,7 +2668,7 @@ document.addEventListener('DOMContentLoaded', function() {
         return m;
     })();
 
-    let lastSort = { field: null, dir: 1 }; // dir: 1 asc, -1 desc
+    let lastSort = { field: null, dir: 1 };
 
     function getRowsParts() {
         const rows = Array.from(gridBody.children);
@@ -2156,10 +2685,51 @@ document.addEventListener('DOMContentLoaded', function() {
         const nb = (b.dataset.name || '').trim();
         return na.localeCompare(nb, 'tr', { sensitivity: 'base' });
     }
+    
+    function parseVardiyaKod(vardiyaKod) {
+        if (!vardiyaKod) return { num: 9999, suffix: 0 };
+        
+        const clean = vardiyaKod.trim();
+        
+        const hasPrevDaySuffix = clean.endsWith(' <') || clean.endsWith('<');
+        const codeWithoutPrevDay = hasPrevDaySuffix ? clean.replace(/\s*<\s*$/, '').trim() : clean;
+        
+        const hasPlus = codeWithoutPrevDay.endsWith('+');
+        const codeWithoutPlus = hasPlus ? codeWithoutPrevDay.slice(0, -1) : codeWithoutPrevDay;
+        
+        const numMatch = codeWithoutPlus.match(/^(\d+)/);
+        const num = numMatch ? parseInt(numMatch[1], 10) : 9999;
+        
+        let suffix;
+        if (hasPrevDaySuffix) {
+            suffix = 0;
+        } else if (hasPlus) {
+            suffix = 2;
+        } else {
+            suffix = 1;
+        }
+        
+        return { num, suffix };
+    }
+    
     function compareByStart(a, b) {
-        const sa = parseInt(a.dataset.start || '99999', 10);
-        const sb = parseInt(b.dataset.start || '99999', 10);
-        return sa - sb;
+        const vardiyaA = a.dataset.vardiya || '';
+        const vardiyaB = b.dataset.vardiya || '';
+        
+        const parsedA = parseVardiyaKod(vardiyaA);
+        const parsedB = parseVardiyaKod(vardiyaB);
+        
+        if (parsedA.num !== parsedB.num) {
+            return parsedA.num - parsedB.num;
+        }
+        
+        if (parsedA.suffix !== parsedB.suffix) {
+            return parsedA.suffix - parsedB.suffix;
+        }
+        
+        const na = (a.dataset.name || '').trim();
+        const nb = (b.dataset.name || '').trim();
+        return na.localeCompare(nb, 'tr', { sensitivity: 'base' });
     }
     function compareByBirim(a, b) {
         const ba = normalizeForOrder(a.dataset.birim || '');
@@ -2167,7 +2737,6 @@ document.addEventListener('DOMContentLoaded', function() {
         const ra = (typeof unitRankMap[ba] !== 'undefined') ? unitRankMap[ba] : 9999;
         const rb = (typeof unitRankMap[bb] !== 'undefined') ? unitRankMap[bb] : 9999;
         if (ra !== rb) return ra - rb;
-        // fallback to natural compare of birim text
         return (a.dataset.birim || '').localeCompare(b.dataset.birim || '', 'tr', { sensitivity: 'base' });
     }
 
@@ -2179,7 +2748,6 @@ document.addEventListener('DOMContentLoaded', function() {
         else if (field === 'birim') cmp = compareByBirim;
         else if (field === 'slot' && slot) {
             cmp = function(a, b) {
-                // find select in row for that slot
                 const selA = a.querySelector(`.area-select[data-slot-time="${slot}"]`);
                 const selB = b.querySelector(`.area-select[data-slot-time="${slot}"]`);
                 const tA = selA ? (selA.options[selA.selectedIndex]?.textContent || '') : '';
@@ -2199,13 +2767,11 @@ document.addEventListener('DOMContentLoaded', function() {
         const sortedTop = sortSection(parts.top, field, dir, slot);
         const sortedBottom = sortSection(parts.bottom, field, dir, slot);
 
-        // Clear gridBody and append in order
         gridBody.innerHTML = '';
         sortedTop.forEach(r => gridBody.appendChild(r));
         if (parts.separator) gridBody.appendChild(parts.separator);
         sortedBottom.forEach(r => gridBody.appendChild(r));
 
-        // Update header indicators
         document.querySelectorAll('.header-cell').forEach(h => {
             h.classList.remove('sorted-asc', 'sorted-desc');
             h.removeAttribute('aria-sort');
@@ -2220,7 +2786,6 @@ document.addEventListener('DOMContentLoaded', function() {
             hdr.setAttribute('aria-sort', dir === 1 ? 'ascending' : 'descending');
         }
 
-        // After reorder, re-init unique options on visible selects to ensure option hiding works correctly
         setTimeout(() => {
             initUniqueOptions();
         }, 40);
@@ -2250,7 +2815,6 @@ document.addEventListener('DOMContentLoaded', function() {
         showStatus(`Sırala: Birim (${dir === 1 ? 'Özel sıra (↑)' : 'Özel sıra (↓)'})`, 'info');
     });
 
-    // Time column sorting: alphabetical by selected option label in that column (slot)
     document.querySelectorAll('.time-header').forEach(hdr => {
         const slot = hdr.dataset.slot;
         if (!slot) return;
@@ -2261,16 +2825,12 @@ document.addEventListener('DOMContentLoaded', function() {
             if (lastSort.field === fieldName) dir = -lastSort.dir;
             lastSort = { field: fieldName, dir: dir };
             applySortedRows('slot', dir, slot);
-            // Human-readable time for status message
             const t = new Date(Number(slot) * 1000);
             const timeStr = t.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit', hour12: false });
             showStatus(`Sırala: Sütun ${timeStr} (${dir === 1 ? 'A→Z' : 'Z→A'})`, 'info');
         });
     });
 
-    // ---------- ROW SELECTION (satıra tıklayınca tüm satırın renginin değişmesi) ----------
-    // Single visual selection: clicking a row highlights it visually (entire row).
-    // Clicking interactive child elements (except selects — selects are handled above) will NOT change selection.
     function initRowSelection() {
         const body = document.getElementById('gridBody');
         if (!body) return;
@@ -2279,12 +2839,10 @@ document.addEventListener('DOMContentLoaded', function() {
             const row = e.target.closest('.grid-row');
             if (!row) return;
 
-            // If click happened inside a link/button/input/textarea, ignore (selects are handled separately)
             if (e.target.closest('button') || e.target.closest('a') || e.target.closest('input') || e.target.closest('textarea')) {
                 return;
             }
 
-            // Remove previous selection and set on clicked row (visual only)
             document.querySelectorAll('.grid-row.selected').forEach(r => {
                 r.classList.remove('selected');
                 r.setAttribute('aria-selected', 'false');
@@ -2293,8 +2851,6 @@ document.addEventListener('DOMContentLoaded', function() {
             row.setAttribute('aria-selected', 'true');
         });
 
-        // Allow keyboard activation (Enter or Space) when a row has focus.
-        // Focusable rows have tabindex="0".
         body.addEventListener('keydown', function(e) {
             const row = e.target.closest && e.target.closest('.grid-row') ? e.target.closest('.grid-row') : null;
             if (!row) return;
@@ -2311,9 +2867,8 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     initRowSelection();
-
-    // Optionally, initialize default ordering state (no sorting) - keep server order.
 });
 </script>
 </body>
+
 </html>

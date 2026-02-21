@@ -4,6 +4,13 @@ session_start();
 
 // --- Config / input ---
 $selected_date = $_GET['date'] ?? date('Y-m-d');
+// Validate selected_date to ensure it's a valid date
+$selected_timestamp = strtotime($selected_date);
+if ($selected_timestamp === false) {
+    $selected_date = date('Y-m-d'); // Fallback to today if invalid
+    $selected_timestamp = strtotime($selected_date);
+}
+$previous_date = date('Y-m-d', $selected_timestamp - 86400); // Use timestamp - 1 day in seconds
 $selected_employee_id = $_GET['employee_id'] ?? '';
 $slot_minutes = 20;
 $page = max(1, intval($_GET['page'] ?? 1));
@@ -18,9 +25,11 @@ $employees = $pdo->query("
     ORDER BY name
 ")->fetchAll(PDO::FETCH_ASSOC);
 
-// --- Fetch history data for day ---
+// --- Fetch history data for both days ---
 $history_data = [];
+$history_data_previous = [];
 if ($selected_employee_id) {
+    // Selected date
     $stmt = $pdo->prepare("
         SELECT e.name as employee_name, e.id as employee_id, a.name as area_name, a.color as area_color,
                ws.slot_start, ws.slot_end
@@ -32,8 +41,23 @@ if ($selected_employee_id) {
     ");
     $stmt->execute([$selected_employee_id, $selected_date]);
     $history_data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    
+    // Previous date - prepare a new statement for clarity
+    $stmt_prev = $pdo->prepare("
+        SELECT e.name as employee_name, e.id as employee_id, a.name as area_name, a.color as area_color,
+               ws.slot_start, ws.slot_end
+        FROM work_slots ws
+        JOIN employees e ON ws.employee_id = e.id
+        JOIN areas a ON ws.area_id = a.id
+        WHERE ws.employee_id = ? AND DATE(ws.slot_start) = ?
+        ORDER BY ws.slot_start ASC
+    ");
+    $stmt_prev->execute([$selected_employee_id, $previous_date]);
+    $history_data_previous = $stmt_prev->fetchAll(PDO::FETCH_ASSOC);
+    
     $selected_employee = array_values(array_filter($employees, fn($x)=>$x['id']==$selected_employee_id))[0] ?? null;
 } else {
+    // Selected date
     $stmt = $pdo->prepare("
         SELECT e.name as employee_name, e.id as employee_id, a.name as area_name, a.color as area_color,
                ws.slot_start, ws.slot_end
@@ -45,19 +69,40 @@ if ($selected_employee_id) {
     ");
     $stmt->execute([$selected_date]);
     $history_data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    
+    // Previous date - prepare a new statement for clarity
+    $stmt_prev = $pdo->prepare("
+        SELECT e.name as employee_name, e.id as employee_id, a.name as area_name, a.color as area_color,
+               ws.slot_start, ws.slot_end
+        FROM work_slots ws
+        JOIN employees e ON ws.employee_id = e.id
+        JOIN areas a ON ws.area_id = a.id
+        WHERE DATE(ws.slot_start) = ?
+        ORDER BY e.name ASC, ws.slot_start ASC
+    ");
+    $stmt_prev->execute([$previous_date]);
+    $history_data_previous = $stmt_prev->fetchAll(PDO::FETCH_ASSOC);
 }
 
-// --- Group shifts by employee ---
+// --- Group shifts by employee for both dates ---
 $shifts_by_employee = [];
+$shifts_by_employee_previous = [];
 if ($selected_employee_id) {
     if (!empty($selected_employee)) {
         $shifts_by_employee[$selected_employee['id']] = ['name'=>$selected_employee['name'], 'shifts'=>[]];
+        $shifts_by_employee_previous[$selected_employee['id']] = ['name'=>$selected_employee['name'], 'shifts'=>[]];
     } else {
         $shifts_by_employee[$selected_employee_id] = ['name'=>'Bilinmeyen Personel','shifts'=>[]];
+        $shifts_by_employee_previous[$selected_employee_id] = ['name'=>'Bilinmeyen Personel','shifts'=>[]];
     }
 } else {
-    foreach ($employees as $e) $shifts_by_employee[$e['id']] = ['name'=>$e['name'],'shifts'=>[]];
+    foreach ($employees as $e) {
+        $shifts_by_employee[$e['id']] = ['name'=>$e['name'],'shifts'=>[]];
+        $shifts_by_employee_previous[$e['id']] = ['name'=>$e['name'],'shifts'=>[]];
+    }
 }
+
+// Fill selected date shifts
 foreach ($history_data as $r) {
     $eid = $r['employee_id'];
     if (!isset($shifts_by_employee[$eid])) $shifts_by_employee[$eid] = ['name'=>$r['employee_name'] ?? ('#'.$eid),'shifts'=>[]];
@@ -66,6 +111,24 @@ foreach ($history_data as $r) {
         'area_name'=>$r['area_name'],'area_color'=>$r['area_color']
     ];
 }
+
+// Fill previous date shifts
+foreach ($history_data_previous as $r) {
+    $eid = $r['employee_id'];
+    if (!isset($shifts_by_employee_previous[$eid])) $shifts_by_employee_previous[$eid] = ['name'=>$r['employee_name'] ?? ('#'.$eid),'shifts'=>[]];
+    $shifts_by_employee_previous[$eid]['shifts'][] = [
+        'start'=>$r['slot_start'],'end'=>$r['slot_end'],
+        'area_name'=>$r['area_name'],'area_color'=>$r['area_color']
+    ];
+}
+
+// --- Sort employees alphabetically by name ---
+uasort($shifts_by_employee, function($a, $b) {
+    return strcasecmp($a['name'], $b['name']);
+});
+uasort($shifts_by_employee_previous, function($a, $b) {
+    return strcasecmp($a['name'], $b['name']);
+});
 
 // --- Pagination ---
 $employee_ids = array_keys($shifts_by_employee);
@@ -79,26 +142,44 @@ if ($per_page>0) {
 $paged_shifts_by_employee = [];
 foreach ($paged_ids as $id) $paged_shifts_by_employee[$id] = $shifts_by_employee[$id];
 
-// --- slots for whole day ---
+// --- slots for both days ---
 $slotSec = $slot_minutes * 60;
-$startSlot = strtotime($selected_date.' 00:00:00');
 $slots_count = intval(1440 / $slot_minutes);
+
+// Previous day slots
+$startSlot_previous = strtotime($previous_date.' 00:00:00');
+$slots_previous = [];
+for ($i=0;$i<$slots_count;$i++) $slots_previous[] = $startSlot_previous + $i*$slotSec;
+
+// Selected day slots
+$startSlot = strtotime($selected_date.' 00:00:00');
 $slots = [];
 for ($i=0;$i<$slots_count;$i++) $slots[] = $startSlot + $i*$slotSec;
+
+// Combined slots for display (previous day + selected day)
+$slots_combined = array_merge($slots_previous, $slots);
 
 // --- layout sizes (tweakable) ---
 $base_person_px = 700;
 $person_col_width = intval($base_person_px * 0.42);
 $slot_col_width = 44;
-$table_min_width = $person_col_width + count($slots) * $slot_col_width;
+$table_min_width = $person_col_width + count($slots_combined) * $slot_col_width;
 
 // --- build only slot colgroup (do NOT include person column here) ---
 $colgroup_slots = '';
-for ($i=0;$i<count($slots);$i++) {
+for ($i=0;$i<count($slots_combined);$i++) {
     $colgroup_slots .= "<col style=\"width:{$slot_col_width}px; min-width:{$slot_col_width}px; max-width:{$slot_col_width}px;\">";
 }
 
 // helpers
+function sort_areas_alphabetically(&$areas) {
+    if (count($areas) > 1) {
+        usort($areas, function($a, $b) {
+            return strcasecmp($a['area_name'], $b['area_name']);
+        });
+    }
+}
+
 function two_words($str){
     $str = trim(preg_replace('/\s+/',' ', strip_tags($str)));
     if ($str==='') return '';
@@ -160,12 +241,35 @@ function two_line_label($label, $maxCharsPerLine = 8) {
     }
 }
 
-$total_shifts = count($history_data);
-$unique_areas = $selected_employee_id ? count(array_unique(array_column($history_data,'area_name'))) : 0;
-$unique_employees_in_history = count(array_unique(array_column($history_data,'employee_id')));
+function format_date_turkish($date) {
+    $days_tr = [
+        'Monday' => 'Pazartesi',
+        'Tuesday' => 'Salı',
+        'Wednesday' => 'Çarşamba',
+        'Thursday' => 'Perşembe',
+        'Friday' => 'Cuma',
+        'Saturday' => 'Cumartesi',
+        'Sunday' => 'Pazar'
+    ];
+    $timestamp = strtotime($date);
+    if ($timestamp === false) {
+        error_log("Invalid date format received in format_date_turkish: " . $date);
+        return 'Geçersiz Tarih'; // Return "Invalid Date" in Turkish
+    }
+    $day_name_en = date('l', $timestamp);
+    $day_name_tr = $days_tr[$day_name_en] ?? $day_name_en;
+    return date('d.m.Y', $timestamp) . ' (' . $day_name_tr . ')';
+}
+
+$total_shifts = count($history_data) + count($history_data_previous);
+$merged_area_names = array_merge(array_column($history_data,'area_name'), array_column($history_data_previous,'area_name'));
+$unique_areas = $selected_employee_id ? count(array_unique($merged_area_names)) : 0;
+$merged_employee_ids = array_merge(array_column($history_data,'employee_id'), array_column($history_data_previous,'employee_id'));
+$unique_employees_in_history = count(array_unique($merged_employee_ids));
 $total_minutes = 0;
-if ($selected_employee_id && !empty($history_data)){
-    foreach ($history_data as $r){
+if ($selected_employee_id && (!empty($history_data) || !empty($history_data_previous))){
+    $merged_history = array_merge($history_data, $history_data_previous);
+    foreach ($merged_history as $r){
         $s=strtotime($r['slot_start']); $e=strtotime($r['slot_end']);
         if ($s && $e && $e>=$s) $total_minutes += intval(($e-$s)/60);
     }
@@ -176,7 +280,7 @@ if ($selected_employee_id && !empty($history_data)){
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Vardiya Dilim Matrisi</title>
+<title>Geçmiş Vardiya</title>
 <link rel="stylesheet" href="../assets/css/admin-grid.css">
 <style>
 :root{
@@ -188,6 +292,14 @@ if ($selected_employee_id && !empty($history_data)){
     --accent: #2b94d6;
     --line-w: 2px;
     --label-font-size: 10px;
+    --date-separator-width: 4px;
+    --previous-day-header-bg: #fff3cd;
+    --previous-day-header-border: #ffc107;
+    --previous-day-header-color: #856404;
+    --previous-day-cell-bg: #fffbf0;
+    --selected-day-header-bg: #d1ecf1;
+    --selected-day-header-color: #0c5460;
+    --selected-day-cell-bg: #e7f6f8;
 }
 *{box-sizing:border-box;}
 html,body{height:100%;}
@@ -211,10 +323,33 @@ body{font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial; back
 }
 .home-btn:hover{ background:#f3f6f8; }
 
+/* Date header styles */
+.date-header-previous {
+  background: var(--previous-day-header-bg);
+  border-right: var(--date-separator-width) solid var(--previous-day-header-border);
+  font-weight: 900;
+  color: var(--previous-day-header-color);
+  font-size: 13px;
+  text-align: center;
+}
+.date-header-selected {
+  background: var(--selected-day-header-bg);
+  font-weight: 900;
+  color: var(--selected-day-header-color);
+  font-size: 13px;
+  text-align: center;
+}
+.time-slot-previous {
+  background: var(--previous-day-cell-bg);
+}
+.time-slot-selected {
+  background: var(--selected-day-cell-bg);
+}
+
 /* Grid */
-.grid { display:grid; grid-template-columns: var(--person-w) 1fr; grid-template-rows: auto 1fr; gap:0; }
-.corner { grid-column:1/2; grid-row:1/2; background:#fff; border:var(--line-w) solid var(--cell-border); border-right:0; padding:10px 14px; font-weight:700; color:var(--muted); }
-.header-scroll { grid-column:2/3; grid-row:1/2; overflow-x:auto; overflow-y:hidden; border:var(--line-w) solid var(--cell-border); border-left:0; background:#fff; }
+.grid { display:grid; grid-template-columns: var(--person-w) 1fr; grid-template-rows: auto 1fr; gap:0; position: relative; }
+.corner { grid-column:1/2; grid-row:1/2; background:#fff; border:var(--line-w) solid var(--cell-border); border-right:0; padding:10px 14px; font-weight:700; color:var(--muted); position: sticky; top: 0; z-index: 3; }
+.header-scroll { grid-column:2/3; grid-row:1/2; overflow-x:auto; overflow-y:hidden; border:var(--line-w) solid var(--cell-border); border-left:0; background:#fff; position: sticky; top: 0; z-index: 2; }
 .header-table{border-collapse:collapse; table-layout:fixed; width:max-content;}
 .header-table th{
   height:var(--row-h);
@@ -294,7 +429,7 @@ body{font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial; back
 </head>
 <body>
 <div class="container">
-  <h2 style="margin:0 0 10px 0;">🕒 Vardiya Dilim Matrisi</h2>
+  <h2 style="margin:0 0 10px 0;">🕒 Geçmiş Vardiya</h2>
 
   <div class="controls">
     <a class="home-btn" href="/breaklist_slot/admin/index.php" aria-label="Anasayfaya dön">Anasayfaya Dön</a>
@@ -325,8 +460,21 @@ body{font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial; back
         </colgroup>
         <thead>
           <tr>
+            <!-- Previous day header -->
+            <th colspan="<?= count($slots_previous) ?>" class="date-header-previous">
+              <?= format_date_turkish($previous_date) ?> - Önceki Gün
+            </th>
+            <!-- Selected day header -->
+            <th colspan="<?= count($slots) ?>" class="date-header-selected">
+              <?= format_date_turkish($selected_date) ?> - Seçili Gün
+            </th>
+          </tr>
+          <tr>
+            <?php foreach ($slots_previous as $slotTs): ?>
+              <th class="time-slot-previous"><?= date('H:i', $slotTs) ?></th>
+            <?php endforeach; ?>
             <?php foreach ($slots as $slotTs): ?>
-              <th><?= date('H:i', $slotTs) ?></th>
+              <th class="time-slot-selected"><?= date('H:i', $slotTs) ?></th>
             <?php endforeach; ?>
           </tr>
         </thead>
@@ -349,10 +497,40 @@ body{font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial; back
           <?= $colgroup_slots /* same colgroup for main table */ ?>
         </colgroup>
         <tbody id="mainBody">
-          <?php foreach ($paged_shifts_by_employee as $edata): ?>
+          <?php foreach ($paged_shifts_by_employee as $eid => $edata): ?>
             <tr>
               <?php
+                // Get shifts for both dates
+                $shifts_previous = $shifts_by_employee_previous[$eid]['shifts'] ?? [];
                 $shifts = $edata['shifts'];
+                
+                // First, render previous day slots
+                foreach ($slots_previous as $slotStartTs):
+                  $slotEndTs = $slotStartTs + $slotSec;
+                  $found = [];
+                  foreach ($shifts_previous as $s) {
+                    $sTs = strtotime($s['start']); $eTs = strtotime($s['end']);
+                    if (min($slotEndTs,$eTs) > max($slotStartTs,$sTs)) $found[] = $s;
+                  }
+                  // Sort areas alphabetically
+                  sort_areas_alphabetically($found);
+              ?>
+                <td class="time-slot-previous">
+                  <?php if (!empty($found)):
+                    $first = $found[0];
+                    $title = htmlspecialchars($first['area_name'].' '.date('H:i',strtotime($first['start'])).' - '.date('H:i',strtotime($first['end'])));
+                    $displayHtml = two_line_label($first['area_name'], 8);
+                  ?>
+                    <div class="shift-text" title="<?= $title ?>"><?= $displayHtml ?></div>
+                    <?php if (count($found)>1): ?><span class="multi-dot" title="<?= count($found) ?> örtüşme"></span><?php endif; ?>
+                  <?php else: ?>
+                    <div class="empty-cell">&nbsp;</div>
+                  <?php endif; ?>
+                </td>
+              <?php endforeach; ?>
+              
+              <?php
+                // Then, render selected day slots
                 foreach ($slots as $slotStartTs):
                   $slotEndTs = $slotStartTs + $slotSec;
                   $found = [];
@@ -360,12 +538,13 @@ body{font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial; back
                     $sTs = strtotime($s['start']); $eTs = strtotime($s['end']);
                     if (min($slotEndTs,$eTs) > max($slotStartTs,$sTs)) $found[] = $s;
                   }
+                  // Sort areas alphabetically
+                  sort_areas_alphabetically($found);
               ?>
-                <td>
+                <td class="time-slot-selected">
                   <?php if (!empty($found)):
                     $first = $found[0];
                     $title = htmlspecialchars($first['area_name'].' '.date('H:i',strtotime($first['start'])).' - '.date('H:i',strtotime($first['end'])));
-                    // Try to produce a 2-line friendly label (approx. 8 chars per line)
                     $displayHtml = two_line_label($first['area_name'], 8);
                   ?>
                     <div class="shift-text" title="<?= $title ?>"><?= $displayHtml ?></div>
@@ -465,8 +644,16 @@ function syncRowHeights(){
 // initial adjustments
 window.addEventListener('load', () => {
     setTimeout(() => {
+        // Calculate the scroll position where the two days meet
+        const previousDaySlots = <?= count($slots_previous) ?>;
+        const slotWidth = <?= $slot_col_width ?>;
+        const scrollToPosition = previousDaySlots * slotWidth;
+        
+        // Set the initial scroll position to the junction of the two days
+        mainScroll.scrollLeft = scrollToPosition;
+        
+        // Compensate scrollbars and sync header (which also syncs headerScroll.scrollLeft)
         compensateScrollbars();
-        headerScroll.scrollLeft = mainScroll.scrollLeft;
         leftScroll.scrollTop = mainScroll.scrollTop;
         syncRowHeights();
     }, 25);
