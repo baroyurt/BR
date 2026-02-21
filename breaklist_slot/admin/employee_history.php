@@ -433,6 +433,7 @@ body{font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial; back
 
   <div class="controls">
     <a class="home-btn" href="/breaklist_slot/admin/index.php" aria-label="Anasayfaya dön">Anasayfaya Dön</a>
+    <a class="home-btn" href="analytics.php" style="background:#1e88e5;">📈 Analiz</a>
 
     <select id="perPage" onchange="applyFilters()" style="padding:7px;border-radius:8px;border:1px solid var(--cell-border);">
       <option value="25" <?= ($per_page_raw === '25') ? 'selected' : '' ?>>25 / sayfa</option>

@@ -1309,6 +1309,7 @@ main { background:white; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,0.
 
           <a href="employees.php" class="btn btn-nav">👥 Çalışanlar</a>
           <a href="employee_history.php" class="btn btn-nav">📊 Vardiya Geçmişi</a>
+          <a href="analytics.php" class="btn btn-nav">📈 Analiz</a>
           <a href="../display/" target="_blank" class="btn btn-nav">📺 Takip Ekranı</a>
 
           <span id="saveStatus"></span>
@@ -1428,6 +1429,35 @@ $now = $current_time->getTimestamp();
 $current_slot_start = floor($now / $slot_duration) * $slot_duration;
 $time_slots = 9;
 $current_index = 5;
+
+// --- Pre-fetch all assignments for all visible employees + slots in ONE query (N+1 fix) ---
+$_all_visible_slot_times = [];
+for ($slot_index = 0; $slot_index < $time_slots; $slot_index++) {
+    $_all_visible_slot_times[] = $current_slot_start + (($slot_index - $current_index) * $slot_duration);
+}
+$_all_grid_employee_ids = array_unique(array_merge(
+    array_column($working_now, 'id'),
+    array_column($manual_employees, 'id')
+));
+$_assignments_map = []; // [employee_id][slot_ts] => ['area_id'=>..., 'color'=>...]
+if (!empty($_all_grid_employee_ids) && !empty($_all_visible_slot_times)) {
+    $_employee_placeholders = implode(',', array_fill(0, count($_all_grid_employee_ids), '?'));
+    $_slot_placeholders     = implode(',', array_fill(0, count($_all_visible_slot_times), 'FROM_UNIXTIME(?)'));
+    $_bulk_stmt = $pdo->prepare(
+        "SELECT ws.employee_id, UNIX_TIMESTAMP(ws.slot_start) AS slot_ts, a.id AS area_id, a.color
+         FROM work_slots ws
+         JOIN areas a ON ws.area_id = a.id
+         WHERE ws.employee_id IN ($_employee_placeholders)
+           AND ws.slot_start IN ($_slot_placeholders)"
+    );
+    $_bulk_stmt->execute(array_merge($_all_grid_employee_ids, $_all_visible_slot_times));
+    foreach ($_bulk_stmt->fetchAll(PDO::FETCH_ASSOC) as $_row) {
+        $_assignments_map[(int)$_row['employee_id']][(int)$_row['slot_ts']] = [
+            'area_id' => $_row['area_id'],
+            'color'   => $_row['color'],
+        ];
+    }
+}
 ?>
 <div class="grid-container" style="--slots:<?= $time_slots ?>; --employee-col:172px; --unit-col:148px; --overtime-col:40px; --start-col:96px;">
   <div class="grid-header">
@@ -1499,9 +1529,7 @@ $current_index = 5;
       <?php for ($i = 0; $i < $time_slots; $i++):
           $offset = $i - $current_index;
           $slot_start_time = $current_slot_start + ($offset * $slot_duration);
-          $stmt = $pdo->prepare("SELECT a.id AS area_id, a.color FROM work_slots ws JOIN areas a ON ws.area_id = a.id WHERE ws.employee_id = ? AND ws.slot_start = FROM_UNIXTIME(?)");
-          $stmt->execute([$employee['id'], $slot_start_time]);
-          $current_assignment = $stmt->fetch(PDO::FETCH_ASSOC);
+          $current_assignment = $_assignments_map[$employee['id']][$slot_start_time] ?? null;
           $current_area_id = $current_assignment['area_id'] ?? '';
           $current_color = $current_assignment['color'] ?? '#e9ecef';
           $is_current = ($i === $current_index);
@@ -1556,9 +1584,7 @@ $current_index = 5;
       <?php for ($i = 0; $i < $time_slots; $i++): 
           $offset = $i - $current_index;
           $slot_start_time = $current_slot_start + ($offset * $slot_duration);
-          $stmt = $pdo->prepare("SELECT a.id AS area_id, a.color FROM work_slots ws JOIN areas a ON ws.area_id = a.id WHERE ws.employee_id = ? AND ws.slot_start = FROM_UNIXTIME(?)");
-          $stmt->execute([$employee['id'], $slot_start_time]);
-          $current_assignment = $stmt->fetch(PDO::FETCH_ASSOC);
+          $current_assignment = $_assignments_map[$employee['id']][$slot_start_time] ?? null;
           $current_area_id = $current_assignment['area_id'] ?? '';
           $current_color = $current_assignment['color'] ?? '#e9ecef';
           $is_current = ($i === $current_index);

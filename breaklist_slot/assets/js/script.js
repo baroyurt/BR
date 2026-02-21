@@ -18,7 +18,7 @@ function showToast(message, type = 'success') {
         border-radius: 5px;
         box-shadow: 0 4px 12px rgba(0,0,0,0.15);
         z-index: 9999;
-        animation: slideIn 0.3s, fadeOut 0.5s 2.5s forwards;
+        animation: toastSlideIn 0.3s, toastFadeOut 0.5s 2.5s forwards;
     `;
     
     document.body.appendChild(toast);
@@ -26,14 +26,4 @@ function showToast(message, type = 'success') {
     setTimeout(() => {
         toast.remove();
     }, 3000);
-}
-
-@keyframes slideIn {
-    from { transform: translateX(100%); opacity: 0; }
-    to { transform: translateX(0); opacity: 1; }
-}
-
-@keyframes fadeOut {
-    from { opacity: 1; }
-    to { opacity: 0; }
 }

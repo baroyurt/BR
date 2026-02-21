@@ -28,9 +28,11 @@ try {
         $count = $stmt->fetch(PDO::FETCH_ASSOC)['cnt'];
         
         if ($count > 0) {
-            $pdo->exec("UPDATE display_notes SET note_text = " . $pdo->quote($note_text));
+            $upd = $pdo->prepare("UPDATE display_notes SET note_text = ?");
+            $upd->execute([$note_text]);
         } else {
-            $pdo->exec("INSERT INTO display_notes (note_text) VALUES (" . $pdo->quote($note_text) . ")");
+            $ins = $pdo->prepare("INSERT INTO display_notes (note_text) VALUES (?)");
+            $ins->execute([$note_text]);
         }
         
         echo json_encode(['success' => true, 'message' => 'Not kaydedildi']);
